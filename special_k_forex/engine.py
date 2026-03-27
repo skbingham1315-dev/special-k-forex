@@ -7,6 +7,8 @@ from .data import MarketDataClient
 from .indicators import compute_indicators, classify_regime
 from .risk import RiskManager
 from .strategy import ForexETFStrategy
+from .ai_analyst import analyse_signal
+from .political_tracker import get_political_signal
 
 
 def _regime_from_bars(bars) -> str:
@@ -131,6 +133,51 @@ class ForexEngine:
                 risk_pct    = self.config.risk_per_trade_pct
                 max_pos_pct = self.config.max_position_pct
 
+            # ── Political tracker ──────────────────────────────────────────
+            pol = get_political_signal(symbol)
+            if pol["score_delta"] > 0:
+                logger.info(f"  {symbol}: political BOOST +1 — {pol['summary']}")
+            elif pol["score_delta"] < 0:
+                logger.info(f"  {symbol}: political WARNING -1 — {pol['summary']}")
+
+            # ── AI analyst validation ───────────────────────────────────────
+            last_df = compute_indicators(self.fetcher.get_daily_bars(symbol) or bars)
+            last_row = last_df.iloc[-1]
+            ai = analyse_signal(
+                symbol=symbol,
+                pair=getattr(self.config, "forex_pairs", {}).get(symbol, symbol),
+                regime=signal.regime,
+                score=signal.score + pol["score_delta"],
+                rsi=float(last_row.get("rsi", 50)),
+                adx=float(last_row.get("adx", 20)),
+                atr=atr,
+                price=price,
+                sma50=float(last_row.get("sma50", price)),
+                sma200=float(last_row.get("sma200", price)),
+                macd_hist=float(last_row.get("macd_hist", 0)),
+                pullback_10d_pct=float(last_row.get("pullback_10d_pct", 0)),
+                notes=signal.notes,
+                political_activity=pol["summary"] if (pol["buys"] or pol["sells"]) else None,
+            )
+
+            logger.info(f"  {symbol}: AI confidence={ai['confidence']} action={ai['action']} — {ai['reason']}")
+
+            # Skip trade if AI says no or confidence too low
+            if ai["action"] == "skip" or ai["confidence"] < 5:
+                logger.info(f"  {symbol}: AI rejected signal — skipping.")
+                continue
+
+            # Reduce size if AI is cautious
+            if ai["action"] == "reduce" or ai["confidence"] < 7:
+                risk_pct    = risk_pct * 0.5
+                max_pos_pct = max_pos_pct * 0.5
+                logger.info(f"  {symbol}: AI reduce — halving position size.")
+
+            # Size up slightly on high confidence active regime
+            if ai["confidence"] >= 8 and signal.regime == "active":
+                risk_pct = min(risk_pct * 1.25, 2.0)
+                logger.info(f"  {symbol}: AI high confidence boost — risk_pct={risk_pct:.2f}%")
+
             plan = self.risk.shares_for_trade(
                 price, atr, equity, stop, tp,
                 risk_pct_override=risk_pct,
@@ -144,7 +191,7 @@ class ForexEngine:
             logger.info(
                 f"  ENTRY {symbol}: qty={plan.qty} price=${price:.4f} "
                 f"stop=${stop:.4f} tp=${tp:.4f} score={signal.score} "
-                f"notes={signal.notes} R:R={plan.risk_reward_ratio}"
+                f"ai_confidence={ai['confidence']} notes={signal.notes} R:R={plan.risk_reward_ratio}"
             )
             if not self.dry_run:
                 try:

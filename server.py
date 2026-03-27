@@ -249,6 +249,8 @@ def api_scan():
         from special_k_forex.data import MarketDataClient
         from special_k_forex.indicators import compute_indicators, classify_regime
         from special_k_forex.strategy import ForexETFStrategy
+        from special_k_forex.ai_analyst import analyse_signal, analyse_market_overview
+        from special_k_forex.political_tracker import get_political_signal
         import pandas as _pd
         client = MarketDataClient(); strat = ForexETFStrategy(); results = []
         def _safe(val, rnd=4):
@@ -261,6 +263,25 @@ def api_scan():
             df = compute_indicators(bars); last = df.iloc[-1]
             regime = classify_regime(df)
             sig = strat.evaluate(sym, bars)
+            # Political signal
+            pol = get_political_signal(sym)
+            # AI analysis (only run if there's a quant signal to evaluate)
+            ai_data = {}
+            if sig:
+                ai_data = analyse_signal(
+                    symbol=sym, pair=FOREX_PAIRS.get(sym, sym), regime=regime,
+                    score=sig.score + pol["score_delta"],
+                    rsi=_safe(last.get("rsi"), 1) or 50,
+                    adx=_safe(last.get("adx"), 1) or 20,
+                    atr=_safe(last.get("atr14")) or 0,
+                    price=_safe(last["close"]) or 0,
+                    sma50=_safe(last.get("sma50")) or 0,
+                    sma200=_safe(last.get("sma200")) or 0,
+                    macd_hist=_safe(last.get("macd_hist"), 5) or 0,
+                    pullback_10d_pct=_safe(last.get("pullback_10d_pct"), 2) or 0,
+                    notes=sig.notes,
+                    political_activity=pol["summary"] if (pol["buys"] or pol["sells"]) else None,
+                )
             results.append({
                 "symbol": sym, "pair": FOREX_PAIRS.get(sym,sym),
                 "signal": sig.action if sig else None,
@@ -278,9 +299,15 @@ def api_scan():
                 "macd_hist": _safe(last.get("macd_hist"), 5),
                 "adx": _safe(last.get("adx"), 1),
                 "pullback_10d_pct": _safe(last.get("pullback_10d_pct"), 2),
+                "political": pol,
+                "ai_confidence": ai_data.get("confidence"),
+                "ai_action": ai_data.get("action"),
+                "ai_reason": ai_data.get("reason"),
             })
         results.sort(key=lambda x: x["score"], reverse=True)
-        return jsonify({"results": results})
+        # Market overview from Claude
+        overview = analyse_market_overview(results)
+        return jsonify({"results": results, "ai_overview": overview})
     except Exception as e:
         log.error(f"/api/scan error: {e}"); return jsonify({"error": str(e), "results": []})
 
@@ -735,6 +762,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <!-- FX RESEARCH -->
 <div id="page-research" class="page">
 <div class="ph"><span class="pt">FX Research — Signal Scanner</span><button class="rb" onclick="loadResearch()">Scan Now</button></div>
+<div id="ai-overview" style="display:none;font-family:var(--mono);font-size:12px;color:var(--accent);background:rgba(0,229,255,.05);border:1px solid rgba(0,229,255,.15);border-radius:5px;padding:10px 14px;margin-bottom:12px;line-height:1.6"></div>
 <div class="g2 gap">
 <div class="cp"><h3>Signal Scores</h3><canvas id="scoreChart" height="220"></canvas></div>
 <div class="cp"><h3>RSI by ETF</h3><canvas id="rsiChart" height="220"></canvas></div>
@@ -995,18 +1023,34 @@ async function loadResearch(){
     const rsis=res.map(r=>r.rsi||0);
     mk('scoreChart',cc('bar',syms,[{data:scores,backgroundColor:scores.map(s=>s>=4?'rgba(0,255,136,.5)':'rgba(74,98,120,.3)'),borderColor:scores.map(s=>s>=4?GR:DI),borderWidth:1}]));
     mk('rsiChart',cc('bar',syms,[{data:rsis,backgroundColor:rsis.map(r=>r<=38?'rgba(0,255,136,.5)':r>=70?'rgba(255,68,102,.5)':'rgba(0,229,255,.3)'),borderColor:rsis.map(r=>r<=38?GR:r>=70?RE:AC),borderWidth:1}]));
+    // AI market overview banner
+    const ovEl=document.getElementById('ai-overview');
+    if(ovEl&&d.ai_overview){ovEl.textContent='AI: '+d.ai_overview;ovEl.style.display='block';}
     cards.innerHTML=res.map(s=>{
       const hasSig=s.signal!=null;const trendUp=s.trend_up;
       const rsiColor=s.rsi<=38?'var(--green)':s.rsi>=70?'var(--red)':'var(--text)';
       const macdColor=s.macd_hist>0?'var(--green)':'var(--red)';
       const rsiPct=s.rsi?(s.rsi/100*100):50;
       const regime=s.regime||'normal';
-      const regimeBadge=regime==='slow'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(255,180,0,.12);color:#ffb400;border:1px solid rgba(255,180,0,.3)">SLOW — micro trades</span>`:regime==='active'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(0,255,136,.1);color:var(--green);border:1px solid rgba(0,255,136,.3)">ACTIVE — full size</span>`:''
+      const regimeBadge=regime==='slow'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(255,180,0,.12);color:#ffb400;border:1px solid rgba(255,180,0,.3)">SLOW — micro trades</span>`:regime==='active'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(0,255,136,.1);color:var(--green);border:1px solid rgba(0,255,136,.3)">ACTIVE — full size</span>`:'';
       const notes=(s.notes||[]).map(n=>`<span style="font-family:var(--mono);font-size:10px;padding:2px 6px;border-radius:3px;background:rgba(0,229,255,.08);color:var(--dim);border:1px solid var(--border)">${n.replace(/_/g,' ')}</span>`).join(' ');
+      const aiConf=s.ai_confidence;const aiAction=s.ai_action||'';const aiReason=s.ai_reason||'';
+      const aiColor=aiConf>=8?'var(--green)':aiConf>=5?'var(--accent)':'var(--red)';
+      const aiBlock=aiConf!=null?`<div style="margin-top:10px;padding:8px 10px;border-radius:4px;background:rgba(0,229,255,.04);border:1px solid rgba(0,229,255,.12)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">AI ANALYST</span>
+          <div style="flex:1;height:4px;background:#0f1a24;border-radius:2px"><div style="width:${aiConf*10}%;height:100%;background:${aiColor};border-radius:2px"></div></div>
+          <span style="font-family:var(--mono);font-size:11px;color:${aiColor}">${aiConf}/10</span>
+          <span style="font-family:var(--mono);font-size:10px;padding:1px 6px;border-radius:3px;background:${aiAction==='enter'?'rgba(0,255,136,.12)':aiAction==='reduce'?'rgba(255,180,0,.12)':'rgba(255,68,102,.12)'};color:${aiAction==='enter'?'var(--green)':aiAction==='reduce'?'#ffb400':'var(--red)'}">${aiAction.toUpperCase()}</span>
+        </div>
+        <div style="font-size:11px;color:var(--dim);font-style:italic">${aiReason}</div>
+      </div>`:'';
+      const pol=s.political||{};
+      const polBlock=(pol.buys||pol.sells)?`<div style="margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--dim);padding:5px 8px;border-radius:3px;background:rgba(255,255,255,.02);border:1px solid var(--border)"><span style="color:#ffb400">CONGRESS</span> — ${pol.summary||''}</div>`:'';
       return `<div class="scan-card">
         <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:2px">
           <div><span class="scan-sym">${s.symbol}</span></div>
-          <div style="display:flex;gap:6px;align-items:center">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
             ${regimeBadge}
             ${hasSig?`<span class="badge signal">SIGNAL ${s.score}</span>`:trendUp?`<span class="badge trend">TREND ↑</span>`:`<span class="badge nosig">NO SIGNAL</span>`}
           </div>
@@ -1024,6 +1068,7 @@ async function loadResearch(){
         <div class="ind-row"><span class="ind-lbl">SMA50</span><div class="ind-bar"><div class="ind-fill" style="width:${s.sma50&&s.last_close?Math.min(s.last_close/s.sma50*100,110)-10:0}%;background:var(--accent)"></div></div><span class="ind-val">${s.sma50!=null?s.sma50.toFixed(4):'--'}</span></div>
         <div class="ind-row"><span class="ind-lbl">SMA200</span><div class="ind-bar"><div class="ind-fill" style="width:${s.sma200&&s.last_close?Math.min(s.last_close/s.sma200*100,110)-10:0}%;background:var(--yellow)"></div></div><span class="ind-val">${s.sma200!=null?s.sma200.toFixed(4):'--'}</span></div>
         ${notes?`<div style="margin-top:10px;display:flex;gap:5px;flex-wrap:wrap">${notes}</div>`:''}
+        ${aiBlock}${polBlock}
       </div>`;
     }).join('');
   }catch(e){cards.innerHTML='<div style="color:var(--red);font-family:var(--mono);padding:20px">Scan error: '+e.message+'</div>';}
