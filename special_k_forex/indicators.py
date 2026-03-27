@@ -62,3 +62,23 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["trend_slope_20"]   = c.ewm(span=20, adjust=False).mean().diff()
 
     return df
+
+
+def classify_regime(df: pd.DataFrame) -> str:
+    """
+    Classify market regime based on ADX and ATR volatility.
+
+    Returns:
+        "slow"   — ADX < 18, choppy/ranging market. Trade smaller, lower signal bar.
+        "normal" — ADX 18–28, moderate trend strength. Use default parameters.
+        "active" — ADX > 28, strong directional move. Use full/larger sizing.
+    """
+    if df.empty or "adx" not in df.columns or "atr14" not in df.columns:
+        return "normal"
+    last = df.iloc[-1]
+    adx = float(last["adx"]) if not pd.isna(last["adx"]) else 20.0
+    if adx < 18:
+        return "slow"
+    if adx > 28:
+        return "active"
+    return "normal"

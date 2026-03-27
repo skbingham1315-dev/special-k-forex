@@ -4,9 +4,16 @@ from datetime import datetime, timezone
 from .broker import Broker
 from .config import Settings as Config
 from .data import MarketDataClient
-from .indicators import compute_indicators
+from .indicators import compute_indicators, classify_regime
 from .risk import RiskManager
 from .strategy import ForexETFStrategy
+
+
+def _regime_from_bars(bars) -> str:
+    """Quick regime check without full indicator recompute."""
+    if bars is None or len(bars) < 60:
+        return "normal"
+    return classify_regime(compute_indicators(bars))
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +76,13 @@ class ForexEngine:
             return
 
         active_positions = len(positions)
-        if active_positions >= self.config.max_positions:
-            logger.info(f"Max positions ({self.config.max_positions}) reached — no new entries.")
+        # In slow markets allow more simultaneous small positions
+        max_pos = self.config.max_positions * 2 if all(
+            _regime_from_bars(self.fetcher.get_daily_bars(s)) == "slow"
+            for s in list(self.config.symbols)[:3]
+        ) else self.config.max_positions
+        if active_positions >= max_pos:
+            logger.info(f"Max positions ({max_pos}) reached — no new entries.")
             return
 
         candidates = []
@@ -103,7 +115,27 @@ class ForexEngine:
             atr    = signal.atr
             stop   = signal.stop_price
             tp     = signal.take_profit_price
-            plan   = self.risk.shares_for_trade(price, atr, equity, stop, tp)
+
+            # Regime-adaptive sizing
+            if signal.regime == "slow":
+                # Small bets in quiet market — keep cash flowing
+                risk_pct    = 0.25
+                max_pos_pct = 5.0
+                logger.info(f"  {symbol}: SLOW regime — micro sizing (risk=0.25%, max_pos=5%)")
+            elif signal.regime == "active":
+                # Strong trend — size up within reason
+                risk_pct    = min(self.config.risk_per_trade_pct * 1.5, 2.0)
+                max_pos_pct = self.config.max_position_pct
+                logger.info(f"  {symbol}: ACTIVE regime — full sizing (risk={risk_pct:.2f}%)")
+            else:
+                risk_pct    = self.config.risk_per_trade_pct
+                max_pos_pct = self.config.max_position_pct
+
+            plan = self.risk.shares_for_trade(
+                price, atr, equity, stop, tp,
+                risk_pct_override=risk_pct,
+                max_pos_pct_override=max_pos_pct,
+            )
 
             if plan.qty <= 0:
                 logger.info(f"  {symbol}: qty=0 after sizing — skipping.")

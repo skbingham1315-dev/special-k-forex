@@ -6,7 +6,7 @@ from typing import Optional
 import pandas as pd
 
 from .config import settings
-from .indicators import compute_indicators
+from .indicators import compute_indicators, classify_regime
 
 
 @dataclass(slots=True)
@@ -19,6 +19,7 @@ class Signal:
     stop_price: float
     take_profit_price: float
     notes: list[str]
+    regime: str = "normal"  # "slow" | "normal" | "active"
 
 
 class ForexETFStrategy:
@@ -46,11 +47,20 @@ class ForexETFStrategy:
         if pd.isna(last["sma50"]) or pd.isna(last["sma200"]) or pd.isna(last["atr14"]):
             return None
 
-        # Hard trend gate
-        if not (last["close"] > last["sma50"] > last["sma200"]):
-            return None
-        notes.append("trend_up")
-        score += 2
+        # Detect market regime — drives entry bar and sizing downstream
+        regime = classify_regime(df)
+
+        # Trend gate — relaxed in slow markets (just needs close > sma50)
+        if regime == "slow":
+            if not (last["close"] > last["sma50"]):
+                return None
+            notes.append("partial_trend")
+            score += 1
+        else:
+            if not (last["close"] > last["sma50"] > last["sma200"]):
+                return None
+            notes.append("trend_up")
+            score += 2
 
         # Liquidity check (forex ETFs have lower volume than equities)
         if last["avg_dollar_volume20"] >= settings.min_avg_dollar_volume:
@@ -93,10 +103,21 @@ class ForexETFStrategy:
 
         atr_value = float(last["atr14"])
         close = float(last["close"])
-        stop_price = round(close - (atr_value * settings.stop_atr_multiplier), 4)
-        take_profit_price = round(close + (atr_value * settings.take_profit_atr_multiplier), 4)
 
-        if score < settings.min_signal_score:
+        # Slow regime: tighter stops (less room needed in quiet market)
+        if regime == "slow":
+            stop_mult = settings.stop_atr_multiplier * 0.7
+            tp_mult   = settings.take_profit_atr_multiplier * 0.8
+        else:
+            stop_mult = settings.stop_atr_multiplier
+            tp_mult   = settings.take_profit_atr_multiplier
+
+        stop_price        = round(close - (atr_value * stop_mult), 4)
+        take_profit_price = round(close + (atr_value * tp_mult), 4)
+
+        # Adaptive minimum score: slow market gets a lower bar to keep trading
+        min_score = 3 if regime == "slow" else settings.min_signal_score
+        if score < min_score:
             return None
 
         return Signal(
@@ -108,6 +129,7 @@ class ForexETFStrategy:
             stop_price=stop_price,
             take_profit_price=take_profit_price,
             notes=notes,
+            regime=regime,
         )
 
     def should_exit(self, raw_df: pd.DataFrame) -> tuple[bool, str]:

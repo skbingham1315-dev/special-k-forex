@@ -60,14 +60,19 @@ class RiskManager:
         portfolio_value: float,
         stop_price: float,
         take_profit_price: Optional[float] = None,
+        risk_pct_override: Optional[float] = None,
+        max_pos_pct_override: Optional[float] = None,
     ) -> PositionPlan:
-        risk_dollars   = portfolio_value * (self.config.risk_per_trade_pct / 100)
+        risk_pct    = risk_pct_override    if risk_pct_override    is not None else self.config.risk_per_trade_pct
+        max_pos_pct = max_pos_pct_override if max_pos_pct_override is not None else self.config.max_position_pct
+
+        risk_dollars   = portfolio_value * (risk_pct / 100)
         risk_per_share = price - stop_price
         if risk_per_share <= 0:
             return PositionPlan(qty=0, max_notional=0, risk_dollars=0)
 
         qty = int(risk_dollars / risk_per_share)
-        max_notional_by_pct = portfolio_value * (self.config.max_position_pct / 100)
+        max_notional_by_pct = portfolio_value * (max_pos_pct / 100)
         max_qty_by_notional  = int(max_notional_by_pct / price) if price > 0 else 0
         qty = min(qty, max_qty_by_notional)
 

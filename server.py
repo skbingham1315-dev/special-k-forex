@@ -247,31 +247,37 @@ def api_scan():
     try:
         from special_k_forex.config import settings
         from special_k_forex.data import MarketDataClient
-        from special_k_forex.indicators import compute_indicators
+        from special_k_forex.indicators import compute_indicators, classify_regime
         from special_k_forex.strategy import ForexETFStrategy
+        import pandas as _pd
         client = MarketDataClient(); strat = ForexETFStrategy(); results = []
+        def _safe(val, rnd=4):
+            try: return round(float(val), rnd) if not _pd.isna(val) else None
+            except: return None
         for sym in settings.symbols:
             bars = client.get_daily_bars(sym)
             if bars is None or len(bars) < 60:
-                results.append({"symbol": sym, "pair": FOREX_PAIRS.get(sym,sym), "signal": None, "score": 0, "notes": [], "last_close": None, "rsi": None, "sma50": None, "sma200": None, "atr": None, "trend_up": False}); continue
+                results.append({"symbol": sym, "pair": FOREX_PAIRS.get(sym,sym), "signal": None, "score": 0, "notes": [], "regime": "normal", "last_close": None, "rsi": None, "sma50": None, "sma200": None, "atr": None, "trend_up": False}); continue
             df = compute_indicators(bars); last = df.iloc[-1]
+            regime = classify_regime(df)
             sig = strat.evaluate(sym, bars)
             results.append({
                 "symbol": sym, "pair": FOREX_PAIRS.get(sym,sym),
                 "signal": sig.action if sig else None,
                 "score":  sig.score  if sig else 0,
                 "notes":  sig.notes  if sig else [],
-                "last_close": round(float(last["close"]),4) if not __import__("pandas").isna(last["close"]) else None,
-                "rsi":    round(float(last["rsi"]),1)   if not __import__("pandas").isna(last.get("rsi",float("nan"))) else None,
-                "sma50":  round(float(last["sma50"]),4) if not __import__("pandas").isna(last.get("sma50",float("nan"))) else None,
-                "sma200": round(float(last["sma200"]),4)if not __import__("pandas").isna(last.get("sma200",float("nan"))) else None,
-                "atr":    round(float(last["atr14"]),4) if not __import__("pandas").isna(last.get("atr14",float("nan"))) else None,
-                "bb_upper": round(float(last["bb_upper"]),4) if not __import__("pandas").isna(last.get("bb_upper",float("nan"))) else None,
-                "bb_lower": round(float(last["bb_lower"]),4) if not __import__("pandas").isna(last.get("bb_lower",float("nan"))) else None,
-                "trend_up": bool(not __import__("pandas").isna(last.get("sma50",float("nan"))) and not __import__("pandas").isna(last.get("sma200",float("nan"))) and float(last["close"]) > float(last["sma50"]) > float(last["sma200"])),
-                "macd_hist": round(float(last["macd_hist"]),5) if not __import__("pandas").isna(last.get("macd_hist",float("nan"))) else None,
-                "adx": round(float(last["adx"]),1) if not __import__("pandas").isna(last.get("adx",float("nan"))) else None,
-                "pullback_10d_pct": round(float(last["pullback_10d_pct"]),2) if not __import__("pandas").isna(last.get("pullback_10d_pct",float("nan"))) else None,
+                "regime": regime,
+                "last_close": _safe(last["close"]),
+                "rsi":    _safe(last.get("rsi"), 1),
+                "sma50":  _safe(last.get("sma50")),
+                "sma200": _safe(last.get("sma200")),
+                "atr":    _safe(last.get("atr14")),
+                "bb_upper": _safe(last.get("bb_upper")),
+                "bb_lower": _safe(last.get("bb_lower")),
+                "trend_up": bool(_safe(last.get("sma50")) and _safe(last.get("sma200")) and float(last["close"]) > float(last["sma50"]) > float(last["sma200"])),
+                "macd_hist": _safe(last.get("macd_hist"), 5),
+                "adx": _safe(last.get("adx"), 1),
+                "pullback_10d_pct": _safe(last.get("pullback_10d_pct"), 2),
             })
         results.sort(key=lambda x: x["score"], reverse=True)
         return jsonify({"results": results})
@@ -994,11 +1000,14 @@ async function loadResearch(){
       const rsiColor=s.rsi<=38?'var(--green)':s.rsi>=70?'var(--red)':'var(--text)';
       const macdColor=s.macd_hist>0?'var(--green)':'var(--red)';
       const rsiPct=s.rsi?(s.rsi/100*100):50;
+      const regime=s.regime||'normal';
+      const regimeBadge=regime==='slow'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(255,180,0,.12);color:#ffb400;border:1px solid rgba(255,180,0,.3)">SLOW — micro trades</span>`:regime==='active'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(0,255,136,.1);color:var(--green);border:1px solid rgba(0,255,136,.3)">ACTIVE — full size</span>`:''
       const notes=(s.notes||[]).map(n=>`<span style="font-family:var(--mono);font-size:10px;padding:2px 6px;border-radius:3px;background:rgba(0,229,255,.08);color:var(--dim);border:1px solid var(--border)">${n.replace(/_/g,' ')}</span>`).join(' ');
       return `<div class="scan-card">
         <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:2px">
           <div><span class="scan-sym">${s.symbol}</span></div>
           <div style="display:flex;gap:6px;align-items:center">
+            ${regimeBadge}
             ${hasSig?`<span class="badge signal">SIGNAL ${s.score}</span>`:trendUp?`<span class="badge trend">TREND ↑</span>`:`<span class="badge nosig">NO SIGNAL</span>`}
           </div>
         </div>
