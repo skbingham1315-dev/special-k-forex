@@ -51,6 +51,7 @@ def analyse_signal(
     pullback_10d_pct: float,
     notes: list,
     political_activity: Optional[str] = None,
+    trend_memory: Optional[str] = None,
 ) -> dict:
     """
     Ask Claude to validate a trading signal.
@@ -67,6 +68,7 @@ def analyse_signal(
                  "below SMA50 (downtrend)"
 
     political_section = f"\nCongressional trading activity: {political_activity}" if political_activity else ""
+    memory_section = f"\nLearned trend context: {trend_memory}" if trend_memory else ""
 
     prompt = f"""You are a quantitative trading analyst reviewing a forex ETF signal for Special K Trading.
 
@@ -79,7 +81,7 @@ ATR(14): {atr:.4f} ({atr/price*100:.2f}% of price)
 MACD histogram: {macd_hist:.5f} ({'positive' if macd_hist > 0 else 'negative'})
 10-day pullback: {pullback_10d_pct:.2f}%
 Quant signal score: {score}/10
-Signal notes: {', '.join(notes)}{political_section}
+Signal notes: {', '.join(notes)}{political_section}{memory_section}
 
 Strategy context: This is a trend-pullback strategy. We buy when price is in an uptrend and has pulled back to a healthy RSI zone (30–50), then bounced. We use ATR-based bracket orders (stop-loss + take-profit). In SLOW regimes we trade smaller to stay active.
 

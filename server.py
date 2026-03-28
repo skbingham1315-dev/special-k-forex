@@ -41,8 +41,32 @@ def _auto_seed():
         log.info(f"Auto-seed complete: {len(trades)} trades loaded")
     except Exception as e:
         log.warning(f"Auto-seed failed: {e}")
+    # Kick off trend memory build after seed
+    threading.Thread(target=_refresh_trend_memory, daemon=True).start()
 
 threading.Thread(target=_auto_seed, daemon=True).start()
+
+# ── Trend memory (AI learns market trends daily) ───────────────────────────────
+def _refresh_trend_memory():
+    try:
+        from special_k_forex.trend_memory import refresh_memory, needs_refresh
+        if not needs_refresh():
+            log.info("Trend memory: still fresh, skipping refresh")
+            return
+        from special_k_forex.config import settings
+        from special_k_forex.data import MarketDataClient
+        from special_k_forex.indicators import compute_indicators
+        client = MarketDataClient()
+        refresh_memory(settings.symbols, FOREX_PAIRS, client, compute_indicators)
+    except Exception as e:
+        log.warning(f"Trend memory refresh error: {e}")
+
+def _trend_memory_daily_loop():
+    """Re-run trend memory analysis once per day."""
+    import time
+    while True:
+        time.sleep(86400)  # 24 hours
+        threading.Thread(target=_refresh_trend_memory, daemon=True).start()
 
 # ── Risk params ───────────────────────────────────────────────────────────────
 def get_risk_params():
@@ -100,6 +124,7 @@ def scheduler_loop():
         time.sleep(300)
 
 threading.Thread(target=scheduler_loop, daemon=True).start()
+threading.Thread(target=_trend_memory_daily_loop, daemon=True).start()
 log.info("Forex scheduler started - runs every 5 min during market hours")
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -251,6 +276,7 @@ def api_scan():
         from special_k_forex.strategy import ForexETFStrategy
         from special_k_forex.ai_analyst import analyse_signal, analyse_market_overview
         from special_k_forex.political_tracker import get_political_signal
+        from special_k_forex.trend_memory import get_symbol_memory, get_macro_overview
         import pandas as _pd
         client = MarketDataClient(); strat = ForexETFStrategy(); results = []
         def _safe(val, rnd=4):
@@ -268,20 +294,31 @@ def api_scan():
             # AI analysis (only run if there's a quant signal to evaluate)
             ai_data = {}
             if sig:
-                ai_data = analyse_signal(
-                    symbol=sym, pair=FOREX_PAIRS.get(sym, sym), regime=regime,
-                    score=sig.score + pol["score_delta"],
-                    rsi=_safe(last.get("rsi"), 1) or 50,
-                    adx=_safe(last.get("adx"), 1) or 20,
-                    atr=_safe(last.get("atr14")) or 0,
-                    price=_safe(last["close"]) or 0,
-                    sma50=_safe(last.get("sma50")) or 0,
-                    sma200=_safe(last.get("sma200")) or 0,
-                    macd_hist=_safe(last.get("macd_hist"), 5) or 0,
-                    pullback_10d_pct=_safe(last.get("pullback_10d_pct"), 2) or 0,
-                    notes=sig.notes,
-                    political_activity=pol["summary"] if (pol["buys"] or pol["sells"]) else None,
-                )
+                sym_mem = get_symbol_memory(sym)
+                    trend_ctx = None
+                    if sym_mem:
+                        trend_ctx = (
+                            f"Trend memory: {sym_mem.get('trend_direction','?')} / "
+                            f"{sym_mem.get('trend_strength','?')} | "
+                            f"Pattern: {sym_mem.get('pattern_notes','')} | "
+                            f"Watch for: {sym_mem.get('watch_for','')} | "
+                            f"Macro: {sym_mem.get('macro_context','')}"
+                        )
+                    ai_data = analyse_signal(
+                        symbol=sym, pair=FOREX_PAIRS.get(sym, sym), regime=regime,
+                        score=sig.score + pol["score_delta"],
+                        rsi=_safe(last.get("rsi"), 1) or 50,
+                        adx=_safe(last.get("adx"), 1) or 20,
+                        atr=_safe(last.get("atr14")) or 0,
+                        price=_safe(last["close"]) or 0,
+                        sma50=_safe(last.get("sma50")) or 0,
+                        sma200=_safe(last.get("sma200")) or 0,
+                        macd_hist=_safe(last.get("macd_hist"), 5) or 0,
+                        pullback_10d_pct=_safe(last.get("pullback_10d_pct"), 2) or 0,
+                        notes=sig.notes,
+                        political_activity=pol["summary"] if (pol["buys"] or pol["sells"]) else None,
+                        trend_memory=trend_ctx,
+                    )
             results.append({
                 "symbol": sym, "pair": FOREX_PAIRS.get(sym,sym),
                 "signal": sig.action if sig else None,
@@ -440,6 +477,29 @@ def api_status():
         "market_open": is_market_open(),
         "buying_power": None,
     })
+
+@app.route("/api/market_intelligence")
+@login_required
+def api_market_intelligence():
+    """Claude's learned trend analysis for each symbol + macro overview."""
+    try:
+        from special_k_forex.trend_memory import get_all_memory, needs_refresh
+        mem = get_all_memory()
+        return jsonify({
+            "symbols": mem.get("symbols", {}),
+            "macro_overview": mem.get("macro_overview", ""),
+            "last_updated": mem.get("last_updated"),
+            "stale": needs_refresh(),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "symbols": {}, "macro_overview": ""})
+
+@app.route("/api/market_intelligence/refresh", methods=["POST"])
+@login_required
+def api_refresh_intelligence():
+    """Manually trigger a trend memory refresh."""
+    threading.Thread(target=_refresh_trend_memory, daemon=True).start()
+    return jsonify({"status": "refresh started"})
 
 @app.route("/api/risk", methods=["GET"])
 @login_required
@@ -761,8 +821,14 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 
 <!-- FX RESEARCH -->
 <div id="page-research" class="page">
-<div class="ph"><span class="pt">FX Research — Signal Scanner</span><button class="rb" onclick="loadResearch()">Scan Now</button></div>
+<div class="ph"><span class="pt">FX Research — Signal Scanner</span>
+  <div style="display:flex;gap:8px">
+    <button class="rb" onclick="loadIntelligence()" style="background:rgba(255,180,0,.12);color:#ffb400;border-color:rgba(255,180,0,.3)">AI Intelligence</button>
+    <button class="rb" onclick="loadResearch()">Scan Now</button>
+  </div>
+</div>
 <div id="ai-overview" style="display:none;font-family:var(--mono);font-size:12px;color:var(--accent);background:rgba(0,229,255,.05);border:1px solid rgba(0,229,255,.15);border-radius:5px;padding:10px 14px;margin-bottom:12px;line-height:1.6"></div>
+<div id="intelligence-panel" style="display:none;margin-bottom:16px"></div>
 <div class="g2 gap">
 <div class="cp"><h3>Signal Scores</h3><canvas id="scoreChart" height="220"></canvas></div>
 <div class="cp"><h3>RSI by ETF</h3><canvas id="rsiChart" height="220"></canvas></div>
@@ -1009,6 +1075,55 @@ async function loadPerformance(){
       mk('drawdownChart',cc('line',cl.map((_,i)=>'T'+(i+1)),[{data:dd,borderColor:RE,backgroundColor:'rgba(255,68,102,.07)',fill:true,tension:.3,pointRadius:0,borderWidth:1.5}]));
     }
   }catch(e){console.error('Performance error:',e);}
+}
+
+// ── Market Intelligence (AI Trend Memory) ──────────────────────────────────
+async function loadIntelligence(){
+  const panel=document.getElementById('intelligence-panel');
+  panel.style.display='block';
+  panel.innerHTML='<div style="font-family:var(--mono);color:var(--dim);padding:16px">Loading AI market intelligence...</div>';
+  try{
+    const r=await fetch('/api/market_intelligence');const d=await r.json();
+    const syms=d.symbols||{};const macro=d.macro_overview||'';const stale=d.stale;
+    const staleNote=stale?'<span style="color:#ffb400;font-size:10px;margin-left:8px">STALE — refresh recommended</span>':'';
+    const ts=d.last_updated?new Date(d.last_updated).toLocaleString():'never';
+    let html=`<div class="cp" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <span style="font-family:var(--mono);font-size:13px;color:var(--accent)">AI Macro Overview</span>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">Updated: ${ts}${staleNote}</span>
+        <button class="rb" onclick="refreshIntelligence()" style="font-size:11px;padding:4px 10px">Refresh</button>
+      </div>
+      <div style="font-family:var(--mono);font-size:12px;color:var(--text);line-height:1.7;font-style:italic">${macro||'No macro analysis yet. Click Refresh to generate.'}</div>
+    </div>
+    <div class="g2 gap">`;
+    for(const[sym,mem] of Object.entries(syms)){
+      const dir=mem.trend_direction||'?';const str=mem.trend_strength||'?';
+      const dirColor=dir==='bullish'?'var(--green)':dir==='bearish'?'var(--red)':'var(--dim)';
+      html+=`<div class="cp">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-family:var(--mono);font-size:16px;color:var(--accent)">${sym}</span>
+          <span style="font-family:var(--mono);font-size:11px;color:${dirColor};text-transform:uppercase">${dir} / ${str}</span>
+        </div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:6px;font-style:italic">${mem.pattern_notes||''}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-family:var(--mono);font-size:10px">
+          <div><span style="color:var(--dim)">Support</span><br><span style="color:var(--green)">${mem.key_support||'--'}</span></div>
+          <div><span style="color:var(--dim)">Resistance</span><br><span style="color:var(--red)">${mem.key_resistance||'--'}</span></div>
+        </div>
+        <div style="margin-top:8px;font-size:10px;color:var(--dim)"><span style="color:#ffb400">Macro:</span> ${mem.macro_context||'--'}</div>
+        <div style="margin-top:4px;font-size:10px;color:var(--dim)"><span style="color:var(--accent)">Watch for:</span> ${mem.watch_for||'--'}</div>
+        <div style="margin-top:4px;font-size:10px;color:var(--red)"><span style="color:var(--dim)">Risk:</span> ${mem.risk_notes||'--'}</div>
+      </div>`;
+    }
+    html+='</div>';
+    if(!Object.keys(syms).length) html+='<div style="font-family:var(--mono);color:var(--dim);padding:20px;text-align:center">No intelligence data yet. Click Refresh to run AI analysis on all symbols.</div>';
+    panel.innerHTML=html;
+  }catch(e){panel.innerHTML='<div style="color:var(--red);font-family:var(--mono);padding:16px">Intelligence error: '+e.message+'</div>';}
+}
+async function refreshIntelligence(){
+  try{
+    await fetch('/api/market_intelligence/refresh',{method:'POST'});
+    setTimeout(loadIntelligence,3000);
+  }catch(e){console.error(e);}
 }
 
 // ── FX Research ────────────────────────────────────────────────────────────
