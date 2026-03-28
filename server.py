@@ -608,6 +608,95 @@ def api_set_budget():
     log.info(f"Trade budget set to: {'unlimited' if amount == 0 else f'${amount:,.2f}'}")
     return jsonify({"budget": amount, "unlimited": amount == 0})
 
+HEDGE_CONFIG = {
+    "enabled":          True,
+    "trigger_pct":      1.5,
+    "ratio":            0.5,
+    "recovery_buffer":  0.5,
+}
+
+@app.route("/api/hedge", methods=["GET"])
+@login_required
+def api_get_hedge():
+    try:
+        from special_k_forex.broker import Broker
+        from special_k_forex.hedge import HedgeManager, HEDGE_INSTRUMENTS
+        from special_k_forex.config import Settings
+        cfg = Settings()
+        cfg.hedge_enabled          = HEDGE_CONFIG["enabled"]
+        cfg.hedge_trigger_pct      = HEDGE_CONFIG["trigger_pct"]
+        cfg.hedge_ratio            = HEDGE_CONFIG["ratio"]
+        cfg.hedge_recovery_buffer  = HEDGE_CONFIG["recovery_buffer"]
+        broker  = Broker()
+        hedger  = HedgeManager(cfg)
+        acct    = broker.get_account()
+        equity  = float(acct.equity)
+        positions = {p.symbol: p for p in broker.get_positions()}
+        status  = hedger.status(broker, positions, equity)
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({"enabled": HEDGE_CONFIG["enabled"], "error": str(e), "open_hedges": [], "hedged": False, "pnl_pct": 0})
+
+@app.route("/api/hedge", methods=["POST"])
+@login_required
+def api_set_hedge():
+    data = request.get_json() or {}
+    if "enabled" in data:
+        HEDGE_CONFIG["enabled"] = bool(data["enabled"])
+    if "trigger_pct" in data:
+        HEDGE_CONFIG["trigger_pct"] = float(data["trigger_pct"])
+    if "ratio" in data:
+        HEDGE_CONFIG["ratio"] = float(data["ratio"])
+    log.info(f"Hedge config updated: {HEDGE_CONFIG}")
+    return jsonify({"ok": True, **HEDGE_CONFIG})
+
+@app.route("/api/hedge/open", methods=["POST"])
+@login_required
+def api_hedge_open():
+    """Manually trigger hedge open."""
+    try:
+        from special_k_forex.broker import Broker
+        from special_k_forex.data import MarketDataClient
+        from special_k_forex.hedge import HedgeManager
+        from special_k_forex.indicators import compute_indicators
+        from special_k_forex.config import Settings
+        cfg = Settings()
+        cfg.hedge_enabled     = True
+        cfg.hedge_trigger_pct = 0.0   # force-open regardless of drawdown
+        cfg.hedge_ratio       = HEDGE_CONFIG["ratio"]
+        broker  = Broker()
+        fetcher = MarketDataClient()
+        hedger  = HedgeManager(cfg)
+        positions = {p.symbol: p for p in broker.get_positions()}
+        # attach indicators so hedge_qty can get ATR
+        enriched = {}
+        for sym, pos in positions.items():
+            bars = fetcher.get_daily_bars(sym)
+            if bars is not None and len(bars) >= 14:
+                bars = compute_indicators(bars)
+                pos._bars = bars
+            enriched[sym] = pos
+        opened = hedger.open_hedges(broker, fetcher, enriched, dry_run=False)
+        return jsonify({"opened": opened})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/hedge/close", methods=["POST"])
+@login_required
+def api_hedge_close():
+    """Manually close all hedge positions."""
+    try:
+        from special_k_forex.broker import Broker
+        from special_k_forex.hedge import HedgeManager
+        from special_k_forex.config import Settings
+        cfg    = Settings()
+        broker = Broker()
+        hedger = HedgeManager(cfg)
+        closed = hedger.close_hedges(broker, dry_run=False)
+        return jsonify({"closed": closed})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # ── HTML ──────────────────────────────────────────────────────────────────────
 LOGIN_HTML = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -923,6 +1012,40 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
     </div>
     <div style="height:6px;background:#0f1a24;border-radius:3px"><div id="budget-bar" style="height:6px;border-radius:3px;background:var(--green);transition:width .5s;width:0%"></div></div>
   </div>
+</div>
+
+<div class="risk-box" id="hedge-box">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <div>
+      <div style="font-family:var(--mono);font-size:13px;color:#ffb400;letter-spacing:1px;margin-bottom:3px">HEDGE PROTECTION</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--dim)">Auto-opens UUP hedge when portfolio drops below trigger threshold.</div>
+    </div>
+    <div id="hedge-status-badge" style="font-family:var(--mono);font-size:11px;padding:4px 10px;border-radius:4px;background:rgba(74,98,120,.3);color:var(--dim)">LOADING</div>
+  </div>
+  <div id="hedge-pnl-row" style="font-family:var(--mono);font-size:12px;color:var(--dim);margin-bottom:10px"></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+    <div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:3px">TRIGGER DRAWDOWN %</div>
+      <input id="hedge-trigger" type="number" min="0.5" max="10" step="0.5" value="1.5"
+        style="background:#0a0f15;border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:14px;padding:5px 8px;border-radius:4px;width:80px">
+    </div>
+    <div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:3px">HEDGE RATIO (0–1)</div>
+      <input id="hedge-ratio" type="number" min="0.1" max="1" step="0.1" value="0.5"
+        style="background:#0a0f15;border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:14px;padding:5px 8px;border-radius:4px;width:80px">
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button onclick="toggleHedge()" id="hedge-toggle-btn"
+      style="background:rgba(0,255,136,.15);color:var(--green);border:1px solid rgba(0,255,136,.4);border-radius:5px;padding:8px 16px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:1px">DISABLE</button>
+    <button onclick="saveHedgeConfig()"
+      style="background:rgba(255,180,0,.1);color:#ffb400;border:1px solid rgba(255,180,0,.3);border-radius:5px;padding:8px 16px;font-family:var(--mono);font-size:11px;cursor:pointer">SAVE CONFIG</button>
+    <button onclick="manualHedge()"
+      style="background:rgba(255,68,100,.1);color:var(--red);border:1px solid rgba(255,68,100,.3);border-radius:5px;padding:8px 16px;font-family:var(--mono);font-size:11px;cursor:pointer">HEDGE NOW</button>
+    <button onclick="closeHedges()"
+      style="background:rgba(74,98,120,.2);color:var(--dim);border:1px solid var(--border);border-radius:5px;padding:8px 16px;font-family:var(--mono);font-size:11px;cursor:pointer">CLOSE HEDGES</button>
+  </div>
+  <div id="hedge-open-list" style="margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--dim)"></div>
 </div>
 
 <div class="risk-box">
@@ -1280,6 +1403,7 @@ async function loadTradeLog(){
 async function loadControl(){
   loadRisk();
   loadBudget();
+  loadHedge();
   try{
     const r=await fetch('/api/quotes');const d=await r.json();const q=d.quotes||{};
     document.getElementById('watchlist-tbody').innerHTML=Object.entries(q).map(([sym,v])=>{
@@ -1304,6 +1428,75 @@ async function loadControl(){
         `</div>`;
     }
   }catch(e){}
+}
+
+// ── Hedge ──────────────────────────────────────────────────────────────────
+async function loadHedge(){
+  try{
+    const r=await fetch('/api/hedge');const d=await r.json();
+    const badge=document.getElementById('hedge-status-badge');
+    const pnlRow=document.getElementById('hedge-pnl-row');
+    const openList=document.getElementById('hedge-open-list');
+    const toggleBtn=document.getElementById('hedge-toggle-btn');
+    if(badge){
+      if(!d.enabled){
+        badge.textContent='DISABLED';badge.style.background='rgba(74,98,120,.3)';badge.style.color='var(--dim)';
+      }else if(d.hedged){
+        badge.textContent='HEDGED ✓';badge.style.background='rgba(255,180,0,.15)';badge.style.color='#ffb400';
+      }else if(d.needs_hedge){
+        badge.textContent='TRIGGER!';badge.style.background='rgba(255,68,100,.2)';badge.style.color='var(--red)';
+      }else{
+        badge.textContent='WATCHING';badge.style.background='rgba(0,255,136,.1)';badge.style.color='var(--green)';
+      }
+    }
+    if(pnlRow){
+      const pct=d.pnl_pct||0;const col=pct>=0?'var(--green)':'var(--red)';
+      pnlRow.innerHTML=`Portfolio P&L: <span style="color:${col}">${pct>=0?'+':''}${pct.toFixed(2)}%</span>`+
+        ` &nbsp;|&nbsp; Trigger: <span style="color:#ffb400">-${d.trigger_pct||1.5}%</span>`;
+    }
+    if(openList){
+      openList.innerHTML=d.open_hedges&&d.open_hedges.length?
+        'Open hedges: '+d.open_hedges.map(s=>`<span style="color:#ffb400">${s}</span>`).join(', '):
+        'No hedges open';
+    }
+    if(toggleBtn) toggleBtn.textContent=d.enabled?'DISABLE':'ENABLE';
+    if(d.trigger_pct) document.getElementById('hedge-trigger').value=d.trigger_pct;
+    if(d.ratio) document.getElementById('hedge-ratio').value=d.ratio;
+  }catch(e){}
+}
+async function toggleHedge(){
+  try{
+    const r=await fetch('/api/hedge');const d=await r.json();
+    await fetch('/api/hedge',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({enabled:!d.enabled})});
+    loadHedge();
+  }catch(e){}
+}
+async function saveHedgeConfig(){
+  const trigger=parseFloat(document.getElementById('hedge-trigger').value)||1.5;
+  const ratio=parseFloat(document.getElementById('hedge-ratio').value)||0.5;
+  try{
+    await fetch('/api/hedge',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({trigger_pct:trigger,ratio})});
+    lg(`Hedge config saved: trigger=-${trigger}% ratio=${ratio}`,'');
+    loadHedge();
+  }catch(e){}
+}
+async function manualHedge(){
+  if(!confirm('Open hedge positions NOW against current losing trades?'))return;
+  try{
+    const r=await fetch('/api/hedge/open',{method:'POST'});const d=await r.json();
+    lg(d.opened&&d.opened.length?`Hedges opened: ${d.opened.join(', ')}`:'No hedges to open','');
+    loadHedge();
+  }catch(e){lg('Hedge error: '+e.message,'warn');}
+}
+async function closeHedges(){
+  if(!confirm('Close ALL hedge positions?'))return;
+  try{
+    const r=await fetch('/api/hedge/close',{method:'POST'});const d=await r.json();
+    lg(d.closed&&d.closed.length?`Hedges closed: ${d.closed.join(', ')}`:'No hedges to close','');
+    loadHedge();
+  }catch(e){lg('Hedge close error: '+e.message,'warn');}
 }
 
 // ── Budget ─────────────────────────────────────────────────────────────────

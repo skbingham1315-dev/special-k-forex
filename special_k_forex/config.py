@@ -60,6 +60,12 @@ class Settings:
     min_buying_power: float = _env_float("MIN_BUYING_POWER", 500.0)
     trade_budget: float = _env_float("TRADE_BUDGET", 0.0)  # 0 = unlimited
 
+    # Hedging
+    hedge_enabled: bool = _env_bool("HEDGE_ENABLED", True)
+    hedge_trigger_pct: float = _env_float("HEDGE_TRIGGER_PCT", 1.5)   # open hedge at -1.5% drawdown
+    hedge_recovery_buffer: float = _env_float("HEDGE_RECOVERY_BUFFER", 0.5)  # close hedge at -1.0%
+    hedge_ratio: float = _env_float("HEDGE_RATIO", 0.5)  # hedge 50% of position value
+
     stop_atr_multiplier: float = _env_float("STOP_ATR_MULTIPLIER", 1.2)
     take_profit_atr_multiplier: float = _env_float("TAKE_PROFIT_ATR_MULTIPLIER", 2.5)
 

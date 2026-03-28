@@ -9,6 +9,7 @@ from .risk import RiskManager
 from .strategy import ForexETFStrategy
 from .ai_analyst import analyse_signal
 from .political_tracker import get_political_signal
+from .hedge import HedgeManager, HEDGE_INSTRUMENTS
 
 
 def _regime_from_bars(bars) -> str:
@@ -40,6 +41,7 @@ class ForexEngine:
         self.fetcher  = MarketDataClient()
         self.risk     = RiskManager(config)
         self.strategy = ForexETFStrategy()
+        self.hedge    = HedgeManager(config)
 
     def run(self):
         logger.info(f"=== Special K Forex {'(DRY RUN)' if self.dry_run else '(LIVE)'} ==="
@@ -70,6 +72,21 @@ class ForexEngine:
                 logger.info(f"EXIT {symbol} [{side}]: {exit_reason}")
                 if not self.dry_run:
                     self.broker.close_position(symbol)
+
+        # ── HEDGE PASS ─────────────────────────────────────────────────────────
+        positions = {p.symbol: p for p in self.broker.get_positions()}
+        if self.hedge.enabled:
+            if self.hedge.needs_hedge(positions, equity):
+                logger.info(
+                    f"HEDGE TRIGGER: portfolio drawdown "
+                    f"{self.hedge.portfolio_unrealized_pct(positions, equity):.2f}% "
+                    f"< -{self.hedge.trigger_pct}% — opening hedges."
+                )
+                self.hedge.open_hedges(self.broker, self.fetcher, positions, self.dry_run)
+            elif self.hedge.should_close_hedge(positions, equity):
+                closed = self.hedge.close_hedges(self.broker, self.dry_run)
+                if closed:
+                    logger.info(f"HEDGE CLOSE: portfolio recovered — closed {closed}")
 
         # ── ENTRY PASS ─────────────────────────────────────────────────────────
         positions    = {p.symbol: p for p in self.broker.get_positions()}
@@ -108,6 +125,8 @@ class ForexEngine:
         for symbol in self.config.symbols:
             if symbol in positions:
                 continue
+            if symbol in HEDGE_INSTRUMENTS:
+                continue  # managed by hedge pass only
             bars = self.fetcher.get_daily_bars(symbol)
             if bars is None or len(bars) < 60:
                 continue
