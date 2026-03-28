@@ -58,6 +58,7 @@ class Settings:
     # When cash drops below this, no new trades are opened until
     # existing positions close and buying power recovers.
     min_buying_power: float = _env_float("MIN_BUYING_POWER", 500.0)
+    trade_budget: float = _env_float("TRADE_BUDGET", 0.0)  # 0 = unlimited
 
     stop_atr_multiplier: float = _env_float("STOP_ATR_MULTIPLIER", 1.2)
     take_profit_atr_multiplier: float = _env_float("TAKE_PROFIT_ATR_MULTIPLIER", 2.5)

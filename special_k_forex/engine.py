@@ -73,7 +73,7 @@ class ForexEngine:
 
         # ── ENTRY PASS ─────────────────────────────────────────────────────────
         positions    = {p.symbol: p for p in self.broker.get_positions()}
-        open_value   = sum(float(p.market_value) for p in positions.values())
+        open_value   = sum(abs(float(p.market_value)) for p in positions.values())
         buying_power = self.broker.get_buying_power()
 
         if self.risk.max_exposure_reached(equity, open_value):
@@ -83,6 +83,14 @@ class ForexEngine:
         if self.risk.buying_power_too_low(buying_power):
             logger.info("Waiting for buying power to recover.")
             return
+
+        # ── Budget cap ─────────────────────────────────────────────────────────
+        budget = getattr(self.config, "trade_budget", 0.0)
+        if budget > 0 and open_value >= budget:
+            logger.info(f"Trade budget ${budget:,.2f} fully deployed (open=${open_value:,.2f}) — no new entries.")
+            return
+        budget_remaining = (budget - open_value) if budget > 0 else float("inf")
+        logger.info(f"Budget: {'unlimited' if budget == 0 else f'${budget:,.2f}'} | deployed: ${open_value:,.2f} | remaining: {'unlimited' if budget == 0 else f'${budget_remaining:,.2f}'}")
 
         active_positions = len(positions)
         # In slow markets allow more concurrent small positions
@@ -205,6 +213,17 @@ class ForexEngine:
                 max_pos_pct_override=max_pos_pct,
             )
 
+            # Clamp qty to budget_remaining
+            if budget_remaining < float("inf") and plan.qty > 0:
+                max_qty_by_budget = int(budget_remaining / price)
+                if max_qty_by_budget < 1:
+                    logger.info(f"  {symbol}: budget exhausted (${budget_remaining:.2f} left at ${price:.4f}) — skipping.")
+                    continue
+                if plan.qty > max_qty_by_budget:
+                    logger.info(f"  {symbol}: qty capped by budget {plan.qty}→{max_qty_by_budget}")
+                    plan.qty = max_qty_by_budget
+                    plan.max_notional = max_qty_by_budget * price
+
             if plan.qty <= 0:
                 logger.info(f"  {symbol}: qty=0 after sizing — skipping.")
                 continue
@@ -221,7 +240,8 @@ class ForexEngine:
                         self.broker.place_bracket_buy(symbol, plan.qty, price, stop, tp)
                     else:
                         self.broker.place_bracket_short(symbol, plan.qty, price, stop, tp)
-                    buying_power   -= plan.max_notional
+                    buying_power     -= plan.max_notional
+                    budget_remaining -= plan.max_notional
                     active_positions += 1
                 except Exception as exc:
                     logger.error(f"  Order failed for {symbol}: {exc}")

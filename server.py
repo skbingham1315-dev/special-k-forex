@@ -16,8 +16,9 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "specialk-forex-2026")
 DASH_PASSWORD  = os.environ.get("DASHBOARD_PASSWORD", "changeme")
 
-RISK_LEVEL = {"value": 5}
-LIVE_MODE  = {"value": False}
+RISK_LEVEL   = {"value": 5}
+LIVE_MODE    = {"value": False}
+TRADE_BUDGET = {"value": float(os.environ.get("TRADE_BUDGET", "0"))}  # 0 = unlimited
 TRADE_LOG  = []
 _SERVER_START    = datetime.datetime.utcnow()
 _LAST_ENGINE_RUN = {"time": None, "result": "not run yet"}
@@ -104,6 +105,8 @@ def run_engine(dry=False):
         cfg.take_profit_atr_multiplier  = params["take_profit_atr_multiplier"]
         cfg.min_signal_score            = params["min_signal_score"]
         cfg.max_positions               = params["max_positions"]
+        if TRADE_BUDGET["value"] > 0:
+            cfg.trade_budget = TRADE_BUDGET["value"]
         ForexEngine(cfg, dry_run=dry).run()
         _LAST_ENGINE_RUN["time"]   = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
         _LAST_ENGINE_RUN["result"] = "ok"
@@ -574,6 +577,37 @@ def api_set_mode():
     LIVE_MODE["value"] = bool(request.get_json().get("live", False))
     return jsonify({"live": LIVE_MODE["value"], "mode": "LIVE" if LIVE_MODE["value"] else "PAPER"})
 
+@app.route("/api/budget", methods=["GET"])
+@login_required
+def api_get_budget():
+    try:
+        from special_k_forex.broker import Broker
+        acct = Broker().get_account()
+        buying_power = float(acct.buying_power)
+        equity       = float(acct.equity)
+    except Exception:
+        buying_power = equity = 0.0
+    budget = TRADE_BUDGET["value"]
+    return jsonify({
+        "budget":         budget,
+        "unlimited":      budget == 0,
+        "buying_power":   buying_power,
+        "equity":         equity,
+        "budget_pct":     round(budget / equity * 100, 1) if equity > 0 and budget > 0 else 0,
+        "live":           LIVE_MODE["value"],
+    })
+
+@app.route("/api/budget", methods=["POST"])
+@login_required
+def api_set_budget():
+    data   = request.get_json() or {}
+    amount = float(data.get("budget", 0))
+    if amount < 0:
+        return jsonify({"error": "Budget cannot be negative"}), 400
+    TRADE_BUDGET["value"] = amount
+    log.info(f"Trade budget set to: {'unlimited' if amount == 0 else f'${amount:,.2f}'}")
+    return jsonify({"budget": amount, "unlimited": amount == 0})
+
 # ── HTML ──────────────────────────────────────────────────────────────────────
 LOGIN_HTML = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -864,6 +898,32 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <!-- CONTROLS -->
 <div id="page-control" class="page">
 <div class="ph"><span class="pt">Bot Controls</span></div>
+
+<div style="background:linear-gradient(135deg,rgba(0,255,136,.06),rgba(0,229,255,.04));border:1px solid rgba(0,255,136,.25);border-radius:8px;padding:20px;margin-bottom:16px">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+    <div>
+      <div style="font-family:var(--mono);font-size:13px;color:var(--green);letter-spacing:1px;margin-bottom:3px">TRADE BUDGET</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--dim)">Hard cap on total capital deployed. Set to 0 for unlimited.</div>
+    </div>
+    <div id="budget-status" style="font-family:var(--mono);font-size:11px;color:var(--dim);text-align:right"></div>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:8px;background:#0a0f15;border:1px solid var(--border);border-radius:5px;padding:6px 12px;flex:1;min-width:180px">
+      <span style="font-family:var(--mono);font-size:16px;color:var(--green)">$</span>
+      <input id="budget-input" type="number" min="0" step="10" placeholder="e.g. 50"
+        style="background:none;border:none;outline:none;color:var(--text);font-family:var(--mono);font-size:18px;width:100%;max-width:160px">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--dim)">USD</span>
+    </div>
+    <button onclick="setBudget()" style="background:rgba(0,255,136,.15);color:var(--green);border:1px solid rgba(0,255,136,.4);border-radius:5px;padding:10px 20px;font-family:var(--mono);font-size:12px;cursor:pointer;letter-spacing:1px">SET BUDGET</button>
+    <button onclick="setBudget(0)" style="background:rgba(74,98,120,.2);color:var(--dim);border:1px solid var(--border);border-radius:5px;padding:10px 16px;font-family:var(--mono);font-size:11px;cursor:pointer">UNLIMITED</button>
+  </div>
+  <div style="margin-top:12px" id="budget-bar-wrap" style="display:none">
+    <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:4px">
+      <span>Deployed</span><span id="budget-bar-label"></span>
+    </div>
+    <div style="height:6px;background:#0f1a24;border-radius:3px"><div id="budget-bar" style="height:6px;border-radius:3px;background:var(--green);transition:width .5s;width:0%"></div></div>
+  </div>
+</div>
 
 <div class="risk-box">
 <div class="risk-header">
@@ -1219,6 +1279,7 @@ async function loadTradeLog(){
 // ── Controls ───────────────────────────────────────────────────────────────
 async function loadControl(){
   loadRisk();
+  loadBudget();
   try{
     const r=await fetch('/api/quotes');const d=await r.json();const q=d.quotes||{};
     document.getElementById('watchlist-tbody').innerHTML=Object.entries(q).map(([sym,v])=>{
@@ -1243,6 +1304,40 @@ async function loadControl(){
         `</div>`;
     }
   }catch(e){}
+}
+
+// ── Budget ─────────────────────────────────────────────────────────────────
+async function loadBudget(){
+  try{
+    const r=await fetch('/api/budget');const d=await r.json();
+    const inp=document.getElementById('budget-input');
+    if(inp&&d.budget>0) inp.value=d.budget;
+    const st=document.getElementById('budget-status');
+    const bar=document.getElementById('budget-bar');
+    const barLabel=document.getElementById('budget-bar-label');
+    const live=d.live;const modeColor=live?'var(--green)':'var(--accent)';
+    if(st){
+      const budgetTxt=d.unlimited?'<span style="color:var(--dim)">No limit set</span>':`<span style="color:var(--green)">$${d.budget.toFixed(2)}</span> budget`;
+      st.innerHTML=`Mode: <span style="color:${modeColor}">${live?'LIVE':'PAPER'}</span> &nbsp;|&nbsp; ${budgetTxt}<br>`+
+        `Equity: <span style="color:var(--accent)">$${(d.equity||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span> &nbsp;|&nbsp; `+
+        `Buying Power: <span style="color:var(--text)">$${(d.buying_power||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>`;
+    }
+    if(bar&&!d.unlimited&&d.budget>0){
+      const pct=Math.min(d.budget_pct,100);
+      bar.style.width=pct+'%';
+      bar.style.background=pct>80?'var(--red)':pct>50?'#ffb400':'var(--green)';
+      if(barLabel) barLabel.textContent=`$${d.budget.toFixed(2)} of $${(d.equity||0).toFixed(2)} equity (${d.budget_pct}%)`;
+    }
+  }catch(e){}
+}
+async function setBudget(val){
+  const amount=val!==undefined?val:parseFloat(document.getElementById('budget-input').value||'0');
+  try{
+    const r=await fetch('/api/budget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({budget:amount})});
+    const d=await r.json();
+    lg(d.unlimited?'Budget set to UNLIMITED':`Budget set to $${d.budget.toFixed(2)}`,'');
+    loadBudget();
+  }catch(e){lg('Budget error: '+e.message,'warn');}
 }
 
 // ── Risk ───────────────────────────────────────────────────────────────────
