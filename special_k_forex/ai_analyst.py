@@ -16,6 +16,14 @@ import logging
 import os
 from typing import Optional
 
+try:
+    from .trader_brain import get_brain_context
+    _BRAIN_AVAILABLE = True
+except ImportError:
+    _BRAIN_AVAILABLE = False
+    def get_brain_context(**kwargs) -> str:
+        return ""
+
 log = logging.getLogger(__name__)
 
 _client = None
@@ -71,6 +79,18 @@ def analyse_signal(
     political_section = f"\nCongressional trading activity: {political_activity}" if political_activity else ""
     memory_section = f"\nLearned trend context: {trend_memory}" if trend_memory else ""
 
+    # Pull relevant sections from the synthesized trading knowledge base
+    near_52w_high = price >= sma200 * 1.05  # rough proxy
+    brain_context = get_brain_context(
+        regime=regime,
+        direction=direction,
+        rsi=rsi,
+        adx=adx,
+        volume_ratio=1.0,  # not available at this call site
+        near_52w_high=near_52w_high,
+    )
+    brain_section = f"\n\n=== TRADING KNOWLEDGE BASE (apply these principles) ===\n{brain_context}" if brain_context else ""
+
     direction_context = {
         "long":   "LONG (trend-pullback buy): price in uptrend, RSI dipped 30-50, expecting bounce higher.",
         "short":  "SHORT (trend-continuation sell): price in downtrend, RSI bounced to 52-75, expecting resumption lower.",
@@ -89,9 +109,9 @@ ATR(14): {atr:.4f} ({atr/price*100:.2f}% of price)
 MACD histogram: {macd_hist:.5f} ({'positive' if macd_hist > 0 else 'negative'})
 10-day move: {pullback_10d_pct:.2f}%
 Quant signal score: {score}/10
-Signal notes: {', '.join(notes)}{political_section}{memory_section}
+Signal notes: {', '.join(notes)}{political_section}{memory_section}{brain_section}
 
-Based on these indicators, should we enter this {direction.upper()} trade?
+Based on these indicators AND the trading knowledge base above, should we enter this {direction.upper()} trade?
 
 Respond in exactly this JSON format (no other text):
 {{"confidence": <1-10>, "action": "<enter|skip|reduce>", "reason": "<one sentence max 15 words>"}}
@@ -106,7 +126,7 @@ Rules:
     try:
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=100,
+            max_tokens=150,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = msg.content[0].text.strip()
