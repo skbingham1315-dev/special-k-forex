@@ -288,42 +288,50 @@ def api_scan():
                 results.append({"symbol": sym, "pair": FOREX_PAIRS.get(sym,sym), "signal": None, "score": 0, "notes": [], "regime": "normal", "last_close": None, "rsi": None, "sma50": None, "sma200": None, "atr": None, "trend_up": False}); continue
             df = compute_indicators(bars); last = df.iloc[-1]
             regime = classify_regime(df)
-            sig = strat.evaluate(sym, bars)
-            # Political signal
+            long_sig   = strat.evaluate(sym, bars)
+            short_sig  = strat.evaluate_short(sym, bars)
+            bounce_sig = strat.evaluate_bounce(sym, bars)
+            # Best signal across all directions
+            all_sigs = [s for s in [long_sig, short_sig, bounce_sig] if s is not None]
+            sig = max(all_sigs, key=lambda s: s.score) if all_sigs else None
             pol = get_political_signal(sym)
-            # AI analysis (only run if there's a quant signal to evaluate)
             ai_data = {}
             if sig:
                 sym_mem = get_symbol_memory(sym)
-                    trend_ctx = None
-                    if sym_mem:
-                        trend_ctx = (
-                            f"Trend memory: {sym_mem.get('trend_direction','?')} / "
-                            f"{sym_mem.get('trend_strength','?')} | "
-                            f"Pattern: {sym_mem.get('pattern_notes','')} | "
-                            f"Watch for: {sym_mem.get('watch_for','')} | "
-                            f"Macro: {sym_mem.get('macro_context','')}"
-                        )
-                    ai_data = analyse_signal(
-                        symbol=sym, pair=FOREX_PAIRS.get(sym, sym), regime=regime,
-                        score=sig.score + pol["score_delta"],
-                        rsi=_safe(last.get("rsi"), 1) or 50,
-                        adx=_safe(last.get("adx"), 1) or 20,
-                        atr=_safe(last.get("atr14")) or 0,
-                        price=_safe(last["close"]) or 0,
-                        sma50=_safe(last.get("sma50")) or 0,
-                        sma200=_safe(last.get("sma200")) or 0,
-                        macd_hist=_safe(last.get("macd_hist"), 5) or 0,
-                        pullback_10d_pct=_safe(last.get("pullback_10d_pct"), 2) or 0,
-                        notes=sig.notes,
-                        political_activity=pol["summary"] if (pol["buys"] or pol["sells"]) else None,
-                        trend_memory=trend_ctx,
+                trend_ctx = None
+                if sym_mem:
+                    trend_ctx = (
+                        f"Trend memory: {sym_mem.get('trend_direction','?')} / "
+                        f"{sym_mem.get('trend_strength','?')} | "
+                        f"Pattern: {sym_mem.get('pattern_notes','')} | "
+                        f"Watch for: {sym_mem.get('watch_for','')} | "
+                        f"Macro: {sym_mem.get('macro_context','')}"
                     )
+                ai_data = analyse_signal(
+                    symbol=sym, pair=FOREX_PAIRS.get(sym, sym), regime=regime,
+                    score=sig.score + pol["score_delta"],
+                    rsi=_safe(last.get("rsi"), 1) or 50,
+                    adx=_safe(last.get("adx"), 1) or 20,
+                    atr=_safe(last.get("atr14")) or 0,
+                    price=_safe(last["close"]) or 0,
+                    sma50=_safe(last.get("sma50")) or 0,
+                    sma200=_safe(last.get("sma200")) or 0,
+                    macd_hist=_safe(last.get("macd_hist"), 5) or 0,
+                    pullback_10d_pct=_safe(last.get("pullback_10d_pct"), 2) or 0,
+                    notes=sig.notes,
+                    political_activity=pol["summary"] if (pol["buys"] or pol["sells"]) else None,
+                    trend_memory=trend_ctx,
+                    direction=sig.direction,
+                )
             results.append({
                 "symbol": sym, "pair": FOREX_PAIRS.get(sym,sym),
-                "signal": sig.action if sig else None,
-                "score":  sig.score  if sig else 0,
-                "notes":  sig.notes  if sig else [],
+                "signal":    sig.action    if sig else None,
+                "direction": sig.direction if sig else None,
+                "score":     sig.score     if sig else 0,
+                "notes":     sig.notes     if sig else [],
+                "long_score":   long_sig.score   if long_sig   else 0,
+                "short_score":  short_sig.score  if short_sig  else 0,
+                "bounce_score": bounce_sig.score if bounce_sig else 0,
                 "regime": regime,
                 "last_close": _safe(last["close"]),
                 "rsi":    _safe(last.get("rsi"), 1),
@@ -1143,11 +1151,14 @@ async function loadResearch(){
     if(ovEl&&d.ai_overview){ovEl.textContent='AI: '+d.ai_overview;ovEl.style.display='block';}
     cards.innerHTML=res.map(s=>{
       const hasSig=s.signal!=null;const trendUp=s.trend_up;
+      const dir=s.direction||'long';
       const rsiColor=s.rsi<=38?'var(--green)':s.rsi>=70?'var(--red)':'var(--text)';
       const macdColor=s.macd_hist>0?'var(--green)':'var(--red)';
       const rsiPct=s.rsi?(s.rsi/100*100):50;
       const regime=s.regime||'normal';
-      const regimeBadge=regime==='slow'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(255,180,0,.12);color:#ffb400;border:1px solid rgba(255,180,0,.3)">SLOW — micro trades</span>`:regime==='active'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(0,255,136,.1);color:var(--green);border:1px solid rgba(0,255,136,.3)">ACTIVE — full size</span>`:'';
+      const regimeBadge=regime==='slow'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(255,180,0,.12);color:#ffb400;border:1px solid rgba(255,180,0,.3)">SLOW</span>`:regime==='active'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(0,255,136,.1);color:var(--green);border:1px solid rgba(0,255,136,.3)">ACTIVE</span>`:'';
+      const dirBadge=hasSig?(dir==='short'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(255,68,102,.12);color:var(--red);border:1px solid rgba(255,68,102,.3)">SHORT ↓</span>`:dir==='bounce'?`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(255,180,0,.12);color:#ffb400;border:1px solid rgba(255,180,0,.3)">BOUNCE ↑</span>`:`<span style="font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(0,255,136,.12);color:var(--green);border:1px solid rgba(0,255,136,.3)">LONG ↑</span>`):'';
+      const scoreRow=`<div style="display:flex;gap:8px;margin-bottom:10px;font-family:var(--mono);font-size:10px"><span style="color:var(--green)">L:${s.long_score||0}</span><span style="color:var(--red)">S:${s.short_score||0}</span><span style="color:#ffb400">B:${s.bounce_score||0}</span></div>`;
       const notes=(s.notes||[]).map(n=>`<span style="font-family:var(--mono);font-size:10px;padding:2px 6px;border-radius:3px;background:rgba(0,229,255,.08);color:var(--dim);border:1px solid var(--border)">${n.replace(/_/g,' ')}</span>`).join(' ');
       const aiConf=s.ai_confidence;const aiAction=s.ai_action||'';const aiReason=s.ai_reason||'';
       const aiColor=aiConf>=8?'var(--green)':aiConf>=5?'var(--accent)':'var(--red)';
@@ -1166,11 +1177,12 @@ async function loadResearch(){
         <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:2px">
           <div><span class="scan-sym">${s.symbol}</span></div>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            ${regimeBadge}
-            ${hasSig?`<span class="badge signal">SIGNAL ${s.score}</span>`:trendUp?`<span class="badge trend">TREND ↑</span>`:`<span class="badge nosig">NO SIGNAL</span>`}
+            ${regimeBadge}${dirBadge}
+            ${hasSig?`<span class="badge signal">SCORE ${s.score}</span>`:trendUp?`<span class="badge trend">TREND ↑</span>`:`<span class="badge nosig">NO SIGNAL</span>`}
           </div>
         </div>
         <div class="scan-pair">${s.pair||''}</div>
+        ${scoreRow}
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-bottom:12px">
           <div class="sc"><div class="lb">Price</div><div class="val" style="font-size:14px">${s.last_close!=null?s.last_close.toFixed(4):'--'}</div></div>
           <div class="sc"><div class="lb">RSI</div><div class="val" style="font-size:14px;color:${rsiColor}">${s.rsi!=null?s.rsi.toFixed(1):'--'}</div></div>
