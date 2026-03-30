@@ -608,6 +608,15 @@ def api_set_budget():
     log.info(f"Trade budget set to: {'unlimited' if amount == 0 else f'${amount:,.2f}'}")
     return jsonify({"budget": amount, "unlimited": amount == 0})
 
+@app.route("/api/markets")
+@login_required
+def api_markets():
+    try:
+        from special_k_forex.market_hours import get_market_status
+        return jsonify({"markets": get_market_status()})
+    except Exception as e:
+        return jsonify({"markets": [], "error": str(e)})
+
 HEDGE_CONFIG = {
     "enabled":          True,
     "trigger_pct":      1.5,
@@ -844,6 +853,10 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <button onclick="showTab('control',this)">Controls</button>
 </nav>
 <div class="tape-wrap"><div class="tape" id="tape">Loading FX data...</div></div>
+<div id="market-clock" style="background:#060c12;border-bottom:1px solid var(--border);padding:5px 16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+<span style="font-family:var(--mono);font-size:9px;color:var(--dim);letter-spacing:1px;margin-right:4px">MARKETS</span>
+<div id="market-clock-items" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+</div>
 
 <!-- OVERVIEW -->
 <div id="page-overview" class="page active">
@@ -1429,6 +1442,22 @@ async function loadControl(){
     }
   }catch(e){}
 }
+
+// ── Market Clock ──────────────────────────────────────────────────────────────
+async function loadMarketClock(){
+  try{
+    const r=await fetch('/api/markets');const d=await r.json();
+    const el=document.getElementById('market-clock-items');
+    if(!el||!d.markets)return;
+    el.innerHTML=d.markets.map(m=>{
+      const col=m.open?(m.id==='crypto'?'#f7931a':m.id.startsWith('nyc')?'var(--green)':'#00cfff'):'var(--dim)';
+      const dot=m.open?'●':'○';
+      return `<span style="font-family:var(--mono);font-size:10px;color:${col};white-space:nowrap" title="${m.name} ${m.local_day} ${m.local_time}">${dot} ${m.flag} ${m.name} <span style="font-size:9px;opacity:0.7">${m.local_time}</span></span>`;
+    }).join('');
+  }catch(e){}
+}
+setInterval(loadMarketClock, 60000);
+loadMarketClock();
 
 // ── Hedge ──────────────────────────────────────────────────────────────────
 async function loadHedge(){
