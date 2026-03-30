@@ -122,7 +122,21 @@ def run_engine(dry=False):
 def scheduler_loop():
     import time
     while True:
-        try: run_engine()
+        try:
+            run_engine()
+            # Crypto runs 24/7 regardless of market hours
+            try:
+                import datetime as _dt
+                _now = _dt.datetime.now()
+                from special_k_forex.crypto_engine import CryptoEngine
+                from special_k_forex.config import Settings
+                cfg = Settings()
+                if TRADE_BUDGET["value"] > 0:
+                    cfg.trade_budget = TRADE_BUDGET["value"]
+                if _now.minute % 30 == 0:  # every 30 min
+                    CryptoEngine(cfg, dry_run=not LIVE_MODE["value"]).run()
+            except Exception as _ce:
+                log.error(f"Crypto engine error: {_ce}")
         except Exception as e: log.error(f"Scheduler error: {e}")
         time.sleep(300)
 
@@ -608,6 +622,38 @@ def api_set_budget():
     log.info(f"Trade budget set to: {'unlimited' if amount == 0 else f'${amount:,.2f}'}")
     return jsonify({"budget": amount, "unlimited": amount == 0})
 
+@app.route("/api/crypto")
+@login_required
+def api_crypto_scan():
+    """Quick crypto market overview for the dashboard."""
+    try:
+        from special_k_forex.crypto_data import CryptoDataClient, CRYPTO_SYMBOLS
+        from special_k_forex.indicators import compute_indicators
+        from special_k_forex.strategy import TrendPullbackStrategy
+        client   = CryptoDataClient()
+        strategy = TrendPullbackStrategy()
+        results  = []
+        for sym in CRYPTO_SYMBOLS:
+            bars = client.get_daily_bars(sym, lookback_days=100)
+            if bars is None or len(bars) < 60:
+                continue
+            df   = compute_indicators(bars)
+            last = df.iloc[-1]
+            bounce = strategy.evaluate_bounce(sym, bars)
+            results.append({
+                "symbol":  sym,
+                "price":   round(float(last["close"]), 4),
+                "rsi":     round(float(last.get("rsi", 50) or 50), 1),
+                "adx":     round(float(last.get("adx", 20) or 20), 1),
+                "signal":  bounce.direction if bounce else None,
+                "score":   bounce.score if bounce else 0,
+                "change_pct": round(float(last.get("pullback_10d_pct", 0) or 0), 2),
+            })
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return jsonify({"crypto": results})
+    except Exception as e:
+        return jsonify({"crypto": [], "error": str(e)})
+
 @app.route("/api/markets")
 @login_required
 def api_markets():
@@ -981,6 +1027,8 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <div style="font-family:var(--mono);font-size:10px;color:var(--dim);padding:8px 0">
   Signal fires at score &ge; 4 &middot; Trend gate: Close &gt; SMA50 &gt; SMA200 &middot; Entry: RSI pullback + Bollinger proximity
 </div>
+<div class="ph" style="margin-top:16px"><span class="pt" style="color:#f7931a">&#8383; CRYPTO MARKETS — 24/7</span><button class="rb" onclick="loadCrypto()">Refresh</button></div>
+<div id="crypto-cards" class="g3 gap"></div>
 </div>
 
 <!-- TRADE LOG -->
@@ -1114,7 +1162,7 @@ function showTab(id,btn){
   document.getElementById('page-'+id).classList.add('active');
   if(btn)btn.classList.add('active');
   setTimeout(()=>Object.values(CH).forEach(c=>{try{c.resize();}catch(e){}}),50);
-  ({overview:loadOverview,positions:loadPositions,performance:loadPerformance,research:loadResearch,tradelog:loadTradeLog,control:loadControl})[id]?.();
+  ({overview:loadOverview,positions:loadPositions,performance:loadPerformance,research:()=>{loadResearch();loadCrypto();},tradelog:loadTradeLog,control:loadControl})[id]?.();
 }
 const f$=v=>v==null?'--':'$'+parseFloat(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const f4=v=>v==null?'--':parseFloat(v).toFixed(4);
@@ -1443,6 +1491,32 @@ async function loadControl(){
   }catch(e){}
 }
 
+// ── Crypto ────────────────────────────────────────────────────────────────────
+async function loadCrypto(){
+  try{
+    const r=await fetch('/api/crypto');const d=await r.json();
+    const el=document.getElementById('crypto-cards');
+    if(!el||!d.crypto)return;
+    if(!d.crypto.length){el.innerHTML='<div style="color:var(--dim);font-family:var(--mono);padding:16px">No crypto data yet.</div>';return;}
+    el.innerHTML=d.crypto.map(c=>{
+      const sigCol=c.signal?'#f7931a':'var(--dim)';
+      const rsiCol=c.rsi<25?'var(--red)':c.rsi<40?'#ffb400':'var(--green)';
+      const chgCol=c.change_pct>=0?'var(--green)':'var(--red)';
+      return `<div class="cp">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-family:var(--mono);font-size:14px;color:#f7931a;font-weight:bold">${c.symbol}</span>
+          <span style="font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:3px;background:rgba(247,147,26,.15);color:${sigCol}">${c.signal?c.signal.toUpperCase()+' '+c.score:'NO SIGNAL'}</span>
+        </div>
+        <div style="font-size:20px;font-weight:bold;margin-bottom:6px">$${c.price.toLocaleString()}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-family:var(--mono);font-size:11px">
+          <div><div style="color:var(--dim)">RSI</div><div style="color:${rsiCol}">${c.rsi}</div></div>
+          <div><div style="color:var(--dim)">ADX</div><div>${c.adx}</div></div>
+          <div><div style="color:var(--dim)">10D</div><div style="color:${chgCol}">${c.change_pct>=0?'+':''}${c.change_pct}%</div></div>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){}
+}
 // ── Market Clock ──────────────────────────────────────────────────────────────
 async function loadMarketClock(){
   try{
