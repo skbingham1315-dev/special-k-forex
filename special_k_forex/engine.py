@@ -232,10 +232,10 @@ class ForexEngine:
                 max_pos_pct_override=max_pos_pct,
             )
 
-            # Clamp qty to budget_remaining
+            # Clamp qty to budget_remaining (fractional-aware)
             if budget_remaining < float("inf") and plan.qty > 0:
-                max_qty_by_budget = int(budget_remaining / price)
-                if max_qty_by_budget < 1:
+                max_qty_by_budget = round(budget_remaining / price, 3)
+                if max_qty_by_budget < 0.001:
                     logger.info(f"  {symbol}: budget exhausted (${budget_remaining:.2f} left at ${price:.4f}) — skipping.")
                     continue
                 if plan.qty > max_qty_by_budget:
@@ -243,8 +243,8 @@ class ForexEngine:
                     plan.qty = max_qty_by_budget
                     plan.max_notional = max_qty_by_budget * price
 
-            if plan.qty <= 0:
-                logger.info(f"  {symbol}: qty=0 after sizing — skipping.")
+            if plan.qty < 0.001:
+                logger.info(f"  {symbol}: qty too small after sizing — skipping.")
                 continue
 
             logger.info(

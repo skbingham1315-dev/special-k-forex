@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PositionPlan:
-    qty: int
+    qty: float
     max_notional: float
     risk_dollars: float
     risk_reward_ratio: float = 0.0
@@ -71,13 +71,14 @@ class RiskManager:
         if risk_per_share <= 0:
             return PositionPlan(qty=0, max_notional=0, risk_dollars=0)
 
-        qty = int(risk_dollars / risk_per_share)
+        qty = round(risk_dollars / risk_per_share, 3)
         max_notional_by_pct = portfolio_value * (max_pos_pct / 100)
-        max_qty_by_notional  = int(max_notional_by_pct / price) if price > 0 else 0
+        max_qty_by_notional  = round(max_notional_by_pct / price, 3) if price > 0 else 0
         qty = min(qty, max_qty_by_notional)
+        qty = max(qty, 0.0)
 
         rr = 0.0
-        if take_profit_price and qty > 0:
+        if take_profit_price and qty >= 0.001:
             reward = (take_profit_price - price) * qty
             risk   = risk_per_share * qty
             rr = round(reward / risk, 2) if risk > 0 else 0.0

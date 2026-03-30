@@ -60,13 +60,13 @@ class Broker:
     def place_bracket_buy(
         self,
         symbol: str,
-        qty: int,
+        qty: float,
         quote_ask: float,
         stop_loss: float,
         take_profit: float,
     ):
-        if qty < 1:
-            raise ValueError("Quantity must be at least 1.")
+        if qty < 0.001:
+            raise ValueError("Quantity must be at least 0.001.")
         limit_price = round(max(quote_ask, 0.01) * 1.0005, 4)
         safe_stop = round(min(stop_loss, limit_price - 0.0001), 4)
         safe_target = round(max(take_profit, limit_price + 0.0001), 4)
@@ -86,14 +86,14 @@ class Broker:
     def place_bracket_short(
         self,
         symbol: str,
-        qty: int,
+        qty: float,
         quote_bid: float,
         stop_loss: float,   # ABOVE entry for shorts
         take_profit: float, # BELOW entry for shorts
     ):
         """Short sell with bracket orders. Stop is above entry, target is below."""
-        if qty < 1:
-            raise ValueError("Quantity must be at least 1.")
+        if qty < 0.001:
+            raise ValueError("Quantity must be at least 0.001.")
         limit_price = round(max(quote_bid, 0.01) * 0.9995, 4)  # slightly below bid
         safe_stop   = round(max(stop_loss,   limit_price + 0.0001), 4)
         safe_target = round(min(take_profit, limit_price - 0.0001), 4)
