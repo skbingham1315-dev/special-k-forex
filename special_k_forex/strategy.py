@@ -232,16 +232,19 @@ class ForexETFStrategy:
             return None
 
         rsi = float(last["rsi"])
-        # Must be extremely oversold
-        if rsi >= 22:
+        # Oversold threshold — catches current market conditions
+        if rsi >= 25:
             return None
 
         if rsi < 15:
             score += 4
             notes.append("extreme_oversold_rsi")
-        else:
+        elif rsi < 20:
             score += 3
             notes.append("deeply_oversold_rsi")
+        else:
+            score += 2
+            notes.append("oversold_rsi")
 
         # Below Bollinger lower band = extra confirmation
         if last["close"] <= last["bb_lower"]:
