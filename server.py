@@ -22,7 +22,31 @@ LIVE_MODE    = {"value": (
     os.environ.get("ALPACA_PAPER", "true").strip().lower() == "false"
     or _alpaca_key.startswith("AK")
 )}
-TRADE_BUDGET = {"value": float(os.environ.get("TRADE_BUDGET", "0"))}  # 0 = unlimited
+
+# ── Budget persistence ─────────────────────────────────────────────────────────
+import json as _json
+_SETTINGS_FILE = "logs/settings.json"
+
+def _load_settings():
+    try:
+        os.makedirs("logs", exist_ok=True)
+        with open(_SETTINGS_FILE) as _f:
+            return _json.load(_f)
+    except Exception:
+        return {}
+
+def _save_settings(data: dict):
+    try:
+        os.makedirs("logs", exist_ok=True)
+        existing = _load_settings()
+        existing.update(data)
+        with open(_SETTINGS_FILE, "w") as _f:
+            _json.dump(existing, _f)
+    except Exception as _e:
+        log.warning(f"Could not save settings: {_e}")
+
+_saved = _load_settings()
+TRADE_BUDGET = {"value": _saved.get("trade_budget", float(os.environ.get("TRADE_BUDGET", "0")))}  # 0 = unlimited
 TRADE_LOG  = []
 _SERVER_START    = datetime.datetime.utcnow()
 _LAST_ENGINE_RUN = {"time": None, "result": "not run yet"}
@@ -96,11 +120,36 @@ def get_broker():
     from special_k_forex.broker import Broker
     return Broker()
 
-def run_engine(dry=False):
+# ETFs associated with each world market session
+_MARKET_ETFS = {
+    "tokyo":     ["FXY", "EWJ"],
+    "hong_kong": ["EWH", "EEM"],
+    "mumbai":    ["EEM"],
+    "frankfurt": ["FXE", "FXF", "EWG"],
+    "london":    ["FXB", "FXS", "EWU"],
+    "sydney":    ["FXA", "EWA"],
+}
+
+def _prioritise_symbols(symbols: list) -> list:
     try:
-        if not dry and not is_market_open():
-            log.info("Market closed - skipping engine run"); return
+        from special_k_forex.market_hours import get_market_status
+        open_markets = {m["id"] for m in get_market_status() if m["open"]}
+        priority = []
+        for mid, etfs in _MARKET_ETFS.items():
+            if mid in open_markets:
+                priority.extend(e for e in etfs if e in symbols and e not in priority)
+        rest = [s for s in symbols if s not in priority]
+        if priority:
+            log.info(f"[MARKET] Prioritising {priority} (open: {open_markets & set(_MARKET_ETFS)})")
+        return priority + rest
+    except Exception:
+        return symbols
+
+def run_engine():
+    try:
         params = get_risk_params()
+        dry = not LIVE_MODE["value"]
+        log.info(f"Running forex engine | live={LIVE_MODE['value']}")
         from special_k_forex.engine import ForexEngine
         from special_k_forex.config import Settings
         cfg = Settings()
@@ -111,6 +160,7 @@ def run_engine(dry=False):
         cfg.max_positions               = params["max_positions"]
         if TRADE_BUDGET["value"] > 0:
             cfg.trade_budget = TRADE_BUDGET["value"]
+        cfg.symbols = _prioritise_symbols(cfg.symbols)
         ForexEngine(cfg, dry_run=dry).run()
         _LAST_ENGINE_RUN["time"]   = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
         _LAST_ENGINE_RUN["result"] = "ok"
@@ -125,9 +175,17 @@ def run_engine(dry=False):
 
 def scheduler_loop():
     import time
+    import pytz as _pytz
+    import datetime as _dtt
     while True:
         try:
-            run_engine()
+            from special_k_forex.market_hours import is_us_regular, is_us_extended
+            if is_us_regular():
+                run_engine()
+            elif is_us_extended():
+                _now = _dtt.datetime.now(_pytz.timezone("America/New_York"))
+                if _now.minute % 15 == 0:
+                    run_engine()
             # Crypto runs 24/7 regardless of market hours
             try:
                 import datetime as _dt
@@ -623,6 +681,7 @@ def api_set_budget():
     if amount < 0:
         return jsonify({"error": "Budget cannot be negative"}), 400
     TRADE_BUDGET["value"] = amount
+    _save_settings({"trade_budget": amount})
     log.info(f"Trade budget set to: {'unlimited' if amount == 0 else f'${amount:,.2f}'}")
     return jsonify({"budget": amount, "unlimited": amount == 0})
 
