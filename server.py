@@ -1763,7 +1763,19 @@ function updateMarketStatus(){
 setInterval(updateMarketStatus,1000);updateMarketStatus();
 
 // ── Init ───────────────────────────────────────────────────────────────────
-loadOverview();loadTape();loadHedge();setInterval(loadTape,30000);setInterval(loadOverview,60000);setInterval(loadHedge,30000);
+loadOverview();loadTape();loadHedge();loadBudget();loadCrypto();
+setInterval(loadTape, 15000);
+setInterval(loadOverview, 30000);
+setInterval(loadHedge, 30000);
+setInterval(loadBudget, 60000);
+setInterval(()=>{
+  const active = document.querySelector('.page.active');
+  if(!active) return;
+  const id = active.id.replace('page-','');
+  if(id === 'positions') loadPositions();
+  if(id === 'research'){ loadResearch(); loadCrypto(); }
+  if(id === 'control') loadControl();
+}, 300000);
 // Load mode state
 fetch('/api/mode').then(r=>r.json()).then(d=>{const btn=document.getElementById('mode-btn');btn.textContent=d.live?'LIVE':'PAPER';btn.style.borderColor=d.live?'var(--red)':'var(--green)';btn.style.color=d.live?'var(--red)':'var(--green)';}).catch(()=>{});
 </script>
