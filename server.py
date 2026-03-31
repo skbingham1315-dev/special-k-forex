@@ -9,7 +9,18 @@ from dotenv import load_dotenv
 import pytz
 
 load_dotenv()
+
+import collections as _collections
+_LOG_BUFFER = _collections.deque(maxlen=200)
+
+class _BufferHandler(logging.Handler):
+    def emit(self, record):
+        _LOG_BUFFER.append({"t": datetime.datetime.utcnow().strftime("%H:%M:%S"), "lvl": record.levelname, "msg": self.format(record)})
+
+_buf_handler = _BufferHandler()
+_buf_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
 logging.basicConfig(level=logging.INFO)
+logging.getLogger().addHandler(_buf_handler)
 log = logging.getLogger("server")
 
 app = Flask(__name__)
@@ -653,6 +664,21 @@ def api_set_mode():
     LIVE_MODE["value"] = bool(request.get_json().get("live", False))
     return jsonify({"live": LIVE_MODE["value"], "mode": "LIVE" if LIVE_MODE["value"] else "PAPER"})
 
+@app.route("/api/logs")
+@login_required
+def api_logs():
+    return jsonify({"logs": list(_LOG_BUFFER)[-100:]})
+
+@app.route("/api/run_now", methods=["POST"])
+@login_required
+def api_run_now():
+    try:
+        _LOG_BUFFER.clear()
+        run_engine()
+        return jsonify({"ok": True, "logs": list(_LOG_BUFFER)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "logs": list(_LOG_BUFFER)})
+
 @app.route("/api/budget", methods=["GET"])
 @login_required
 def api_get_budget():
@@ -970,7 +996,13 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 
 <!-- OVERVIEW -->
 <div id="page-overview" class="page active">
-<div class="ph"><span class="pt">Portfolio Overview</span><button class="rb" onclick="loadOverview()">Refresh</button></div>
+<div class="ph"><span class="pt">Portfolio Overview</span><button class="rb" onclick="loadOverview()">Refresh</button><button class="rb" onclick="runEngineNow()" style="margin-left:8px;background:rgba(0,229,255,.1);color:var(--accent);border-color:var(--accent)">▶ Run Engine Now</button></div>
+<div id="engine-log-panel" style="margin-bottom:12px;display:none">
+  <div style="background:#060c12;border:1px solid var(--border);border-radius:6px;padding:12px">
+    <div style="font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--dim);margin-bottom:8px">ENGINE LOG</div>
+    <div id="engine-log-lines" style="font-family:var(--mono);font-size:10px;color:var(--dim);max-height:300px;overflow-y:auto;white-space:pre-wrap;line-height:1.6"></div>
+  </div>
+</div>
 <div class="sr">
 <div class="sc"><div class="lb">Equity</div><div class="val accent" id="s-equity">--</div></div>
 <div class="sc"><div class="lb">Cash</div><div class="val" id="s-cash">--</div></div>
@@ -1762,8 +1794,34 @@ function updateMarketStatus(){
 }
 setInterval(updateMarketStatus,1000);updateMarketStatus();
 
+// ── Engine Log ────────────────────────────────────────────────────────────────
+async function loadLogs(){
+  try{
+    const r=await fetch('/api/logs');const d=await r.json();
+    const el=document.getElementById('engine-log-lines');if(!el)return;
+    const lvlCol={INFO:'var(--dim)',WARNING:'#ffb400',ERROR:'var(--red)'};
+    el.innerHTML=d.logs.slice().reverse().map(l=>`<span style="color:${lvlCol[l.lvl]||'var(--dim)'}">[${l.t}] ${l.msg}</span>`).join('\n');
+  }catch(e){}
+}
+async function runEngineNow(){
+  const btn=event.target;btn.disabled=true;btn.textContent='Running...';
+  const logPanel=document.getElementById('engine-log-panel');
+  const logEl=document.getElementById('engine-log-lines');
+  if(logPanel)logPanel.style.display='block';
+  if(logEl)logEl.textContent='Running engine...';
+  try{
+    const r=await fetch('/api/run_now',{method:'POST'});const d=await r.json();
+    const lvlCol={INFO:'var(--dim)',WARNING:'#ffb400',ERROR:'var(--red)'};
+    if(logEl)logEl.innerHTML=d.logs.slice().reverse().map(l=>`<span style="color:${lvlCol[l.lvl]||'var(--dim)'}">[${l.t}] ${l.msg}</span>`).join('\n');
+    lg(d.ok?'Engine run complete':'Engine error: '+(d.error||''),'');
+    setTimeout(loadOverview,1000);
+  }catch(e){if(logEl)logEl.textContent='Error: '+e.message;}
+  finally{btn.disabled=false;btn.textContent='▶ Run Engine Now';}
+}
+setInterval(loadLogs,30000);
+
 // ── Init ───────────────────────────────────────────────────────────────────
-loadOverview();loadTape();loadHedge();loadBudget();loadCrypto();
+loadOverview();loadTape();loadHedge();loadBudget();loadCrypto();loadLogs();
 setInterval(loadTape, 15000);
 setInterval(loadOverview, 30000);
 setInterval(loadHedge, 30000);
