@@ -17,7 +17,11 @@ app.secret_key = os.environ.get("SECRET_KEY", "specialk-forex-2026")
 DASH_PASSWORD  = os.environ.get("DASHBOARD_PASSWORD", "changeme")
 
 RISK_LEVEL   = {"value": 5}
-LIVE_MODE    = {"value": os.environ.get("ALPACA_PAPER", "true").strip().lower() == "false"}
+_alpaca_key  = os.environ.get("ALPACA_API_KEY", "")
+LIVE_MODE    = {"value": (
+    os.environ.get("ALPACA_PAPER", "true").strip().lower() == "false"
+    or _alpaca_key.startswith("AK")
+)}
 TRADE_BUDGET = {"value": float(os.environ.get("TRADE_BUDGET", "0"))}  # 0 = unlimited
 TRADE_LOG  = []
 _SERVER_START    = datetime.datetime.utcnow()
