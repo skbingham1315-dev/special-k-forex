@@ -1736,20 +1736,30 @@ async function toggleMode(){
 function updateMarketStatus(){
   const now=new Date();const et=new Date(now.toLocaleString("en-US",{timeZone:"America/New_York"}));
   const day=et.getDay();const h=et.getHours(),m=et.getMinutes(),s=et.getSeconds();
-  const totalSec=h*3600+m*60+s;const openSec=9*3600+30*60;const closeSec=16*3600;
+  const totalSec=h*3600+m*60+s;
+  const preSec=4*3600;const openSec=9*3600+30*60;const closeSec=16*3600;const afterSec=20*3600;
   const isWeekday=day>=1&&day<=5;
   const statusEl=document.getElementById("market-status");const countEl=document.getElementById("countdown");
-  if(!isWeekday){statusEl.textContent="WEEKEND";statusEl.style.color="var(--dim)";return;}
+  if(!isWeekday){
+    statusEl.textContent="WEEKEND";statusEl.style.color="var(--dim)";
+    const monday=new Date(et);monday.setDate(et.getDate()+(day===6?2:1));monday.setHours(4,0,0,0);
+    const diff=Math.floor((monday-et)/1000);countEl.textContent=`Pre-market opens in ${Math.floor(diff/3600)}h ${Math.floor((diff%3600)/60)}m`;
+    return;
+  }
   if(totalSec>=openSec&&totalSec<closeSec){
     statusEl.textContent="MARKET OPEN";statusEl.style.color="var(--green)";
     const rem=closeSec-totalSec;countEl.textContent=`Closes in ${Math.floor(rem/3600)}h ${String(Math.floor((rem%3600)/60)).padStart(2,"0")}m`;
-  }else if(totalSec<openSec){
-    statusEl.textContent="PRE-MARKET";statusEl.style.color="var(--yellow)";
-    const rem=openSec-totalSec;countEl.textContent=`Opens in ${Math.floor(rem/3600)}h ${String(Math.floor((rem%3600)/60)).padStart(2,"0")}m`;
+  }else if(totalSec>=preSec&&totalSec<openSec){
+    statusEl.textContent="PRE-MARKET";statusEl.style.color="#ffb400";
+    const rem=openSec-totalSec;countEl.textContent=`Regular opens in ${Math.floor(rem/3600)}h ${String(Math.floor((rem%3600)/60)).padStart(2,"0")}m`;
+  }else if(totalSec>=closeSec&&totalSec<afterSec){
+    statusEl.textContent="AFTER HOURS";statusEl.style.color="#ffb400";
+    const rem=afterSec-totalSec;countEl.textContent=`After-hours close in ${Math.floor(rem/3600)}h ${String(Math.floor((rem%3600)/60)).padStart(2,"0")}m`;
   }else{
     statusEl.textContent="MARKET CLOSED";statusEl.style.color="var(--red)";
-    const tomorrow=new Date(et);tomorrow.setDate(et.getDate()+1);tomorrow.setHours(9,30,0,0);
-    const diff=Math.floor((tomorrow-et)/1000);countEl.textContent=`Opens in ${Math.floor(diff/3600)}h ${Math.floor((diff%3600)/60)}m`;
+    const tomorrow=new Date(et);if(totalSec>=afterSec){tomorrow.setDate(et.getDate()+1);}
+    tomorrow.setHours(4,0,0,0);
+    const diff=Math.floor((tomorrow-et)/1000);countEl.textContent=`Pre-market opens in ${Math.floor(diff/3600)}h ${Math.floor((diff%3600)/60)}m`;
   }
 }
 setInterval(updateMarketStatus,1000);updateMarketStatus();
