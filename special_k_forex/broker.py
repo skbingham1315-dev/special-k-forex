@@ -7,6 +7,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce, QueryOrderStatus
 from alpaca.trading.requests import (
     GetOrdersRequest,
+    GetPortfolioHistoryRequest,
     LimitOrderRequest,
     StopLossRequest,
     TakeProfitRequest,
@@ -56,6 +57,16 @@ class Broker:
     def close_position(self, symbol: str):
         self.cancel_orders_for_symbol(symbol)
         return self.client.close_position(symbol)
+
+    def get_portfolio_history(self, period: str = "1A", timeframe: str = "1D"):
+        """Return daily equity history for the past `period` (e.g. '1A', '6M', '3M')."""
+        req = GetPortfolioHistoryRequest(period=period, timeframe=timeframe)
+        return self.client.get_portfolio_history(req)
+
+    def get_closed_orders(self, limit: int = 500):
+        """Return all filled/closed orders, newest first."""
+        req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=limit)
+        return self.client.get_orders(filter=req)
 
     def place_bracket_buy(
         self,

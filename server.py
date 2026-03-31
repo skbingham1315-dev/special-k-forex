@@ -303,13 +303,37 @@ def api_account():
         b = get_broker(); a = b.get_account()
         pos = b.get_positions(); orders = b.get_open_orders()
         up = sum(float(p.unrealized_pl or 0) for p in pos)
+        pos_list = [{
+            "symbol": p.symbol,
+            "pair": FOREX_PAIRS.get(p.symbol, p.symbol),
+            "qty": float(p.qty or 0),
+            "side": str(getattr(p.side, "value", p.side) or "long"),
+            "avg_entry_price": float(p.avg_entry_price or 0),
+            "current_price":   float(p.current_price or 0),
+            "market_value":    float(p.market_value or 0),
+            "unrealized_pl":   float(p.unrealized_pl or 0),
+            "unrealized_plpc": float(p.unrealized_plpc or 0),
+        } for p in pos]
+        ord_list = [{
+            "id":          str(o.id),
+            "symbol":      o.symbol,
+            "side":        str(getattr(o.side, "value", o.side) or ""),
+            "qty":         float(o.qty or 0),
+            "filled_qty":  float(o.filled_qty or 0),
+            "type":        str(getattr(o.type, "value", o.type) or ""),
+            "limit_price": float(o.limit_price or 0) if o.limit_price else None,
+            "status":      str(getattr(o.status, "value", o.status) or ""),
+            "created_at":  str(o.created_at)[:19] if o.created_at else "",
+        } for o in orders]
         return jsonify({
             "account": {"equity": float(a.equity or 0), "cash": float(a.cash or 0),
                         "buying_power": float(a.buying_power or 0), "last_equity": float(a.last_equity or 0)},
             "unrealized_pnl": up, "position_count": len(pos), "order_count": len(orders),
+            "positions": pos_list, "orders": ord_list,
         })
     except Exception as e:
-        return jsonify({"error": str(e), "account": {}, "unrealized_pnl": 0, "position_count": 0, "order_count": 0})
+        log.error(f"/api/account error: {e}")
+        return jsonify({"error": str(e), "account": {}, "unrealized_pnl": 0, "position_count": 0, "order_count": 0, "positions": [], "orders": []})
 
 @app.route("/api/positions")
 @login_required
@@ -1051,6 +1075,14 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <div class="cp"><h3>Exposure by ETF</h3><canvas id="exposureChart" height="170"></canvas></div>
 <div class="cp"><h3>Cash vs Invested</h3><canvas id="allocationChart" height="170"></canvas></div>
 </div>
+<div class="cp gap">
+<div class="ph"><span class="pt">Open Positions</span><span id="ov-pos-count" style="font-family:var(--mono);font-size:11px;color:var(--dim)"></span></div>
+<div id="ov-positions" style="font-family:var(--mono);font-size:11px;color:var(--dim)">Loading...</div>
+</div>
+<div class="cp gap">
+<div class="ph"><span class="pt">Open Orders</span><span id="ov-ord-count" style="font-family:var(--mono);font-size:11px;color:var(--dim)"></span></div>
+<div id="ov-orders" style="font-family:var(--mono);font-size:11px;color:var(--dim)">Loading...</div>
+</div>
 <div class="acts">
 <button class="btn ba" onclick="runDry()">DRY RUN SCAN</button>
 <button class="btn bg" onclick="runLive()">RUN ENGINE</button>
@@ -1319,17 +1351,19 @@ async function loadTape(){
 // ── Overview ──────────────────────────────────────────────────────────────
 async function loadOverview(){
   try{
-    const r=await fetch('/api/account');const d=await r.json();const a=d.account||{};
+    const r=await fetch('/api/account');const d=await r.json();
+    if(d.error){lg('Account error: '+d.error,'warn');}
+    const a=d.account||{};
     document.getElementById('s-equity').textContent=f$(a.equity);
     document.getElementById('s-cash').textContent=f$(a.cash);
     document.getElementById('s-bp').textContent=f$(a.buying_power);
     const dp=parseFloat(a.equity||0)-parseFloat(a.last_equity||0);
-    const el=document.getElementById('s-dpnl');el.textContent=f$(dp);el.className='val '+fc(dp);
-    const up=document.getElementById('s-upnl');up.textContent=f$(d.unrealized_pnl??0);up.className='val '+fc(d.unrealized_pnl??0);
+    const el=document.getElementById('s-dpnl');if(el){el.textContent=f$(dp);el.className='val '+fc(dp);}
+    const up=document.getElementById('s-upnl');if(up){up.textContent=f$(d.unrealized_pnl??0);up.className='val '+fc(d.unrealized_pnl??0);}
     document.getElementById('s-pos').textContent=d.position_count??0;
     document.getElementById('s-orders').textContent=d.order_count??0;
     const eq=parseFloat(a.equity||0),ca=parseFloat(a.cash||0);
-    document.getElementById('s-exp').textContent=eq>0?((eq-ca)/eq*100).toFixed(1)+'%':'--';
+    const expEl=document.getElementById('s-exp');if(expEl)expEl.textContent=eq>0?((eq-ca)/eq*100).toFixed(1)+'%':'--';
     if(eq){
       if(!window._eq)window._eq=[];
       window._eq.push({t:new Date().toLocaleTimeString('en-US',{hour12:false}),v:eq});
@@ -1338,18 +1372,37 @@ async function loadOverview(){
     }
     const iv=Math.max(0,eq-ca);
     mk('allocationChart',{type:'doughnut',data:{labels:['Cash','Invested'],datasets:[{data:[ca,iv],backgroundColor:[DI,AC],borderColor:'#080c10',borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,labels:{color:'#4a6278',boxWidth:10}}}}});
-    loadPeriods();
-  }catch(e){lg('Account error: '+e.message,'warn');}
-  try{
-    const r2=await fetch('/api/positions');const d2=await r2.json();const pos=d2.positions||[];
-    if(pos.length){
-      mk('exposureChart',cc('bar',pos.map(p=>p.symbol),[{data:pos.map(p=>Math.abs(parseFloat(p.market_value||0))),backgroundColor:pos.map(p=>parseFloat(p.unrealized_pl||0)>=0?'rgba(0,255,136,.4)':'rgba(255,68,102,.4)'),borderColor:pos.map(p=>parseFloat(p.unrealized_pl||0)>=0?GR:RE),borderWidth:1}]));
+    // ── Positions mini-table ──────────────────────────────────────────────
+    const pos=d.positions||[];
+    const posEl=document.getElementById('ov-positions');
+    const posCt=document.getElementById('ov-pos-count');
+    if(posCt)posCt.textContent=pos.length?`${pos.length} open`:'';
+    if(posEl){
+      posEl.innerHTML=pos.length?`<table style="width:100%;border-collapse:collapse"><thead><tr style="color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:1px"><th style="text-align:left;padding:4px 6px">Symbol</th><th style="text-align:left;padding:4px 6px">Pair</th><th style="text-align:right;padding:4px 6px">Qty</th><th style="text-align:right;padding:4px 6px">Entry</th><th style="text-align:right;padding:4px 6px">Price</th><th style="text-align:right;padding:4px 6px">Value</th><th style="text-align:right;padding:4px 6px">P&L</th><th style="text-align:right;padding:4px 6px">%</th><th style="text-align:right;padding:4px 6px"></th></tr></thead><tbody>`+
+        pos.map(p=>{const pl=parseFloat(p.unrealized_pl||0);const plpc=(parseFloat(p.unrealized_plpc||0)*100).toFixed(2);const col=pl>=0?'var(--green)':'var(--red)';
+          return `<tr style="border-top:1px solid #0d1520"><td style="padding:5px 6px;color:var(--accent)">${p.symbol}</td><td style="padding:5px 6px;color:var(--dim);font-size:10px">${p.pair||''}</td><td style="padding:5px 6px;text-align:right">${p.qty}</td><td style="padding:5px 6px;text-align:right">${f4(p.avg_entry_price)}</td><td style="padding:5px 6px;text-align:right">${f4(p.current_price)}</td><td style="padding:5px 6px;text-align:right">${f$(p.market_value)}</td><td style="padding:5px 6px;text-align:right;color:${col}">${f$(pl)}</td><td style="padding:5px 6px;text-align:right;color:${col}">${plpc}%</td><td style="padding:5px 6px;text-align:right"><button class="btn bd" style="padding:2px 8px;font-size:10px" onclick="closePos('${p.symbol}')">X</button></td></tr>`;
+        }).join('')+`</tbody></table>`
+        :'<div style="color:var(--dim);padding:6px 0">No open positions</div>';
     }
+    // ── Open orders mini-table ────────────────────────────────────────────
+    const ords=d.orders||[];
+    const ordEl=document.getElementById('ov-orders');
+    const ordCt=document.getElementById('ov-ord-count');
+    if(ordCt)ordCt.textContent=ords.length?`${ords.length} pending`:'';
+    if(ordEl){
+      ordEl.innerHTML=ords.length?`<table style="width:100%;border-collapse:collapse"><thead><tr style="color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:1px"><th style="text-align:left;padding:4px 6px">Symbol</th><th style="text-align:left;padding:4px 6px">Side</th><th style="text-align:right;padding:4px 6px">Qty</th><th style="text-align:right;padding:4px 6px">Filled</th><th style="text-align:right;padding:4px 6px">Limit</th><th style="text-align:left;padding:4px 6px">Status</th><th style="text-align:left;padding:4px 6px">Type</th><th style="text-align:left;padding:4px 6px">Created</th></tr></thead><tbody>`+
+        ords.map(o=>{const col=o.side==='buy'?'var(--green)':'var(--red)';
+          return `<tr style="border-top:1px solid #0d1520"><td style="padding:5px 6px;color:var(--accent)">${o.symbol}</td><td style="padding:5px 6px;color:${col};text-transform:uppercase">${o.side}</td><td style="padding:5px 6px;text-align:right">${o.qty}</td><td style="padding:5px 6px;text-align:right;color:var(--dim)">${o.filled_qty||0}</td><td style="padding:5px 6px;text-align:right">${o.limit_price?f4(o.limit_price):'MKT'}</td><td style="padding:5px 6px;color:var(--accent)">${o.status}</td><td style="padding:5px 6px;color:var(--dim)">${o.type}</td><td style="padding:5px 6px;color:var(--dim);font-size:10px">${o.created_at.slice(0,16)}</td></tr>`;
+        }).join('')+`</tbody></table>`
+        :'<div style="color:var(--dim);padding:6px 0">No open orders</div>';
+    }
+    if(pos.length)mk('exposureChart',cc('bar',pos.map(p=>p.symbol),[{data:pos.map(p=>Math.abs(parseFloat(p.market_value||0))),backgroundColor:pos.map(p=>parseFloat(p.unrealized_pl||0)>=0?'rgba(0,255,136,.4)':'rgba(255,68,102,.4)'),borderColor:pos.map(p=>parseFloat(p.unrealized_pl||0)>=0?GR:RE),borderWidth:1}]));
     const l=window._tl||[];const b={};
     l.forEach(t=>{const k=Math.round((t.pnl||0)/50)*50;b[k]=(b[k]||0)+1;});
     const ks=Object.keys(b).sort((a,b)=>+a-+b);
     if(ks.length)mk('pnlDistChart',cc('bar',ks.map(k=>'$'+k),[{data:ks.map(k=>b[k]),backgroundColor:ks.map(k=>+k>=0?'rgba(0,255,136,.5)':'rgba(255,68,102,.5)'),borderColor:ks.map(k=>+k>=0?GR:RE),borderWidth:1}]));
-  }catch(e){}
+    loadPeriods();
+  }catch(e){lg('Account error: '+e.message,'warn');}
   try{
     const sr=await fetch('/api/status');const sd=await sr.json();
     const ss=document.getElementById('sys-status');
@@ -1823,7 +1876,7 @@ setInterval(loadLogs,30000);
 // ── Init ───────────────────────────────────────────────────────────────────
 loadOverview();loadTape();loadHedge();loadBudget();loadCrypto();loadLogs();
 setInterval(loadTape, 15000);
-setInterval(loadOverview, 30000);
+setInterval(loadOverview, 15000);
 setInterval(loadHedge, 30000);
 setInterval(loadBudget, 60000);
 setInterval(()=>{
