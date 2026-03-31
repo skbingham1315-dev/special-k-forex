@@ -212,13 +212,16 @@ class ForexEngine:
 
             logger.info(f"  {symbol}: AI conf={ai['confidence']} action={ai['action']} [{signal.direction}] — {ai['reason']}")
 
-            # Bounce trades need higher AI confidence (counter-trend = riskier)
-            min_conf = 7 if signal.direction == "bounce" else 5
-            if ai["action"] == "skip" or ai["confidence"] < min_conf:
-                logger.info(f"  {symbol}: AI rejected [{signal.direction}] — skipping.")
+            # Hard skip only on very low confidence — AI adjusts size, doesn't block valid quant signals
+            if ai["confidence"] <= 2:
+                logger.info(f"  {symbol}: AI hard reject (conf≤2) — skipping.")
                 continue
 
-            if ai["action"] == "reduce" or ai["confidence"] < 7:
+            if ai["action"] == "skip" or ai["confidence"] <= 4:
+                risk_pct    *= 0.25
+                max_pos_pct *= 0.25
+                logger.info(f"  {symbol}: AI low conf — quarter size.")
+            elif ai["action"] == "reduce" or ai["confidence"] <= 6:
                 risk_pct    *= 0.5
                 max_pos_pct *= 0.5
                 logger.info(f"  {symbol}: AI reduce — halving size.")
