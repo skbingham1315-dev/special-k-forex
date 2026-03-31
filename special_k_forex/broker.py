@@ -68,19 +68,31 @@ class Broker:
         if qty < 0.001:
             raise ValueError("Quantity must be at least 0.001.")
         limit_price = round(max(quote_ask, 0.01) * 1.0005, 4)
-        safe_stop = round(min(stop_loss, limit_price - 0.0001), 4)
-        safe_target = round(max(take_profit, limit_price + 0.0001), 4)
 
-        request = LimitOrderRequest(
-            symbol=symbol,
-            qty=qty,
-            side=OrderSide.BUY,
-            limit_price=limit_price,
-            time_in_force=TimeInForce.DAY,
-            order_class=OrderClass.BRACKET,
-            take_profit=TakeProfitRequest(limit_price=safe_target),
-            stop_loss=StopLossRequest(stop_price=safe_stop),
-        )
+        # Alpaca does not allow bracket orders for fractional shares — use simple limit
+        is_fractional = (qty % 1) != 0
+        if is_fractional:
+            logger.info(f"Fractional qty {qty} for {symbol} — using simple limit order (no bracket)")
+            request = LimitOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.BUY,
+                limit_price=limit_price,
+                time_in_force=TimeInForce.DAY,
+            )
+        else:
+            safe_stop = round(min(stop_loss, limit_price - 0.0001), 4)
+            safe_target = round(max(take_profit, limit_price + 0.0001), 4)
+            request = LimitOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.BUY,
+                limit_price=limit_price,
+                time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.BRACKET,
+                take_profit=TakeProfitRequest(limit_price=safe_target),
+                stop_loss=StopLossRequest(stop_price=safe_stop),
+            )
         return self.client.submit_order(request)
 
     def place_bracket_short(
@@ -95,20 +107,32 @@ class Broker:
         if qty < 0.001:
             raise ValueError("Quantity must be at least 0.001.")
         limit_price = round(max(quote_bid, 0.01) * 0.9995, 4)  # slightly below bid
-        safe_stop   = round(max(stop_loss,   limit_price + 0.0001), 4)
-        safe_target = round(min(take_profit, limit_price - 0.0001), 4)
 
-        request = LimitOrderRequest(
-            symbol=symbol,
-            qty=qty,
-            side=OrderSide.SELL,
-            limit_price=limit_price,
-            time_in_force=TimeInForce.DAY,
-            order_class=OrderClass.BRACKET,
-            take_profit=TakeProfitRequest(limit_price=safe_target),
-            stop_loss=StopLossRequest(stop_price=safe_stop),
-        )
+        # Alpaca does not allow bracket orders for fractional shares — use simple limit
+        is_fractional = (qty % 1) != 0
+        if is_fractional:
+            logger.info(f"Fractional qty {qty} for {symbol} — using simple limit order (no bracket)")
+            request = LimitOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                limit_price=limit_price,
+                time_in_force=TimeInForce.DAY,
+            )
+        else:
+            safe_stop   = round(max(stop_loss,   limit_price + 0.0001), 4)
+            safe_target = round(min(take_profit, limit_price - 0.0001), 4)
+            request = LimitOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                limit_price=limit_price,
+                time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.BRACKET,
+                take_profit=TakeProfitRequest(limit_price=safe_target),
+                stop_loss=StopLossRequest(stop_price=safe_stop),
+            )
         logger.info(
-            f"SHORT {symbol}: qty={qty} limit={limit_price} stop={safe_stop} tp={safe_target}"
+            f"SHORT {symbol}: qty={qty} limit={limit_price} fractional={is_fractional}"
         )
         return self.client.submit_order(request)
