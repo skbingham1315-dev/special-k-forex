@@ -949,6 +949,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <span><span class="sdot"></span><span id="market-status">CHECKING</span></span>
 <span id="clock">--:--:--</span>
 <span id="countdown" style="color:var(--yellow);font-size:11px"></span>
+<span id="hedge-header-badge" style="font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:3px;background:rgba(74,98,120,.3);color:var(--dim)">HEDGE</span>
 <button id="mode-btn" onclick="toggleMode()" style="font-family:var(--mono);font-size:10px;padding:4px 10px;border-radius:3px;border:1px solid var(--green);color:var(--green);background:rgba(0,255,136,.05);cursor:pointer">PAPER</button>
 <a href="/logout" class="lbtn">LOGOUT</a>
 </div>
@@ -1601,20 +1602,17 @@ async function loadHedge(){
   try{
     const r=await fetch('/api/hedge');const d=await r.json();
     const badge=document.getElementById('hedge-status-badge');
+    const hdr=document.getElementById('hedge-header-badge');
     const pnlRow=document.getElementById('hedge-pnl-row');
     const openList=document.getElementById('hedge-open-list');
     const toggleBtn=document.getElementById('hedge-toggle-btn');
-    if(badge){
-      if(!d.enabled){
-        badge.textContent='DISABLED';badge.style.background='rgba(74,98,120,.3)';badge.style.color='var(--dim)';
-      }else if(d.hedged){
-        badge.textContent='HEDGED ✓';badge.style.background='rgba(255,180,0,.15)';badge.style.color='#ffb400';
-      }else if(d.needs_hedge){
-        badge.textContent='TRIGGER!';badge.style.background='rgba(255,68,100,.2)';badge.style.color='var(--red)';
-      }else{
-        badge.textContent='WATCHING';badge.style.background='rgba(0,255,136,.1)';badge.style.color='var(--green)';
-      }
-    }
+    let badgeText,badgeBg,badgeColor;
+    if(!d.enabled){badgeText='HEDGE OFF';badgeBg='rgba(74,98,120,.3)';badgeColor='var(--dim)';}
+    else if(d.hedged){badgeText='HEDGED ✓';badgeBg='rgba(255,180,0,.2)';badgeColor='#ffb400';}
+    else if(d.needs_hedge){badgeText='HEDGE!';badgeBg='rgba(255,68,100,.25)';badgeColor='var(--red)';}
+    else{const pct=(d.pnl_pct||0).toFixed(1);badgeText=`HEDGE ON ${pct}%`;badgeBg='rgba(0,255,136,.1)';badgeColor='var(--green)';}
+    if(badge){badge.textContent=badgeText;badge.style.background=badgeBg;badge.style.color=badgeColor;}
+    if(hdr){hdr.textContent=badgeText;hdr.style.background=badgeBg;hdr.style.color=badgeColor;}
     if(pnlRow){
       const pct=d.pnl_pct||0;const col=pct>=0?'var(--green)':'var(--red)';
       pnlRow.innerHTML=`Portfolio P&L: <span style="color:${col}">${pct>=0?'+':''}${pct.toFixed(2)}%</span>`+
@@ -1765,7 +1763,7 @@ function updateMarketStatus(){
 setInterval(updateMarketStatus,1000);updateMarketStatus();
 
 // ── Init ───────────────────────────────────────────────────────────────────
-loadOverview();loadTape();setInterval(loadTape,30000);setInterval(loadOverview,60000);
+loadOverview();loadTape();loadHedge();setInterval(loadTape,30000);setInterval(loadOverview,60000);setInterval(loadHedge,30000);
 // Load mode state
 fetch('/api/mode').then(r=>r.json()).then(d=>{const btn=document.getElementById('mode-btn');btn.textContent=d.live?'LIVE':'PAPER';btn.style.borderColor=d.live?'var(--red)':'var(--green)';btn.style.color=d.live?'var(--red)':'var(--green)';}).catch(()=>{});
 </script>
