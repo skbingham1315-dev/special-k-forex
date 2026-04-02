@@ -67,7 +67,8 @@ class RiskManager:
         max_pos_pct = max_pos_pct_override if max_pos_pct_override is not None else self.config.max_position_pct
 
         risk_dollars   = portfolio_value * (risk_pct / 100)
-        risk_per_share = price - stop_price
+        # Use absolute distance so shorts (stop above entry) calculate correctly
+        risk_per_share = abs(price - stop_price)
         if risk_per_share <= 0:
             return PositionPlan(qty=0, max_notional=0, risk_dollars=0)
 
@@ -79,7 +80,8 @@ class RiskManager:
 
         rr = 0.0
         if take_profit_price and qty >= 0.001:
-            reward = (take_profit_price - price) * qty
+            # Use absolute values so R:R is always positive for both longs and shorts
+            reward = abs(take_profit_price - price) * qty
             risk   = risk_per_share * qty
             rr = round(reward / risk, 2) if risk > 0 else 0.0
             logger.info(f"R:R ratio = {rr:.2f} (reward ${reward:.2f} / risk ${risk:.2f})")

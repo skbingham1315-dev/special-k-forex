@@ -250,6 +250,12 @@ class ForexEngine:
                 logger.info(f"  {symbol}: qty too small after sizing — skipping.")
                 continue
 
+            # Minimum R:R gate — reject trades with poor reward-to-risk ratio
+            MIN_RR = 1.5
+            if plan.risk_reward_ratio > 0 and plan.risk_reward_ratio < MIN_RR:
+                logger.info(f"  {symbol}: R:R {plan.risk_reward_ratio:.2f} < {MIN_RR} minimum — skipping.")
+                continue
+
             logger.info(
                 f"  ENTRY [{signal.direction.upper()}] {symbol}: qty={plan.qty} "
                 f"price=${price:.4f} stop=${stop:.4f} tp=${tp:.4f} "

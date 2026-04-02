@@ -61,6 +61,54 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["pullback_10d_pct"] = (c - c.shift(10)) / c.shift(10) * 100
     df["trend_slope_20"]   = c.ewm(span=20, adjust=False).mean().diff()
 
+    # ── On-Balance Volume (Wyckoff volume accumulation) ────────────────────
+    # OBV rises when closes are up (accumulation) and falls when down (distribution).
+    # Bullish: OBV trending up while price pulls back = institutional buying.
+    obv_raw = np.where(c > c.shift(1), v, np.where(c < c.shift(1), -v, 0))
+    df["obv"] = pd.Series(obv_raw, index=df.index).cumsum()
+    df["obv_ema20"] = df["obv"].ewm(span=20, adjust=False).mean()
+    # True when OBV is above its 20-period EMA → accumulation bias
+    df["obv_trending_up"] = df["obv"] > df["obv_ema20"]
+
+    # ── Volume declining on pullback (Wyckoff healthy retracement) ─────────
+    # A valid trend pullback has SHRINKING volume (sellers drying up).
+    # High volume on a dip = distribution, not a safe bounce zone.
+    vol_recent = v.rolling(5).mean()
+    vol_prior  = v.shift(5).rolling(5).mean()
+    df["vol_declining_pullback"] = vol_recent < vol_prior * 0.85
+
+    # ── RSI divergence (Constance Brown / classic technical analysis) ──────
+    # Bullish: price makes a lower low but RSI makes a higher low = momentum
+    # is improving even as price falls → reversal signal.
+    price_chg_10 = c - c.shift(10)
+    rsi_chg_10   = df["rsi"] - df["rsi"].shift(10)
+    df["rsi_bull_divergence"] = (price_chg_10 < -0.001) & (rsi_chg_10 > 2.0)
+    # Bearish: price higher high but RSI lower high → momentum fading
+    df["rsi_bear_divergence"] = (price_chg_10 > 0.001) & (rsi_chg_10 < -2.0)
+
+    # ── Bollinger Band squeeze (Bill Williams volatility cycle) ────────────
+    # When BB width compresses to its lowest point in 20 bars, the market is
+    # coiling for a breakout. Entry signals during a squeeze carry higher
+    # conviction because the subsequent move tends to be larger.
+    bb_pctile = df["bb_width"].rolling(20).rank(pct=True)
+    df["bb_squeeze"] = bb_pctile < 0.2   # width in bottom 20% of last 20 bars
+
+    # ── Fibonacci retracement levels (Constance Brown / harmonic trading) ──
+    # Calculate from the dominant 50-bar swing high/low.
+    # Entries near the 38.2–61.8% retracement zone are highest probability.
+    swing_high = h.rolling(50).max()
+    swing_low  = l.rolling(50).min()
+    fib_range  = (swing_high - swing_low).replace(0, np.nan)
+    df["fib_38"] = swing_high - fib_range * 0.382
+    df["fib_50"] = swing_high - fib_range * 0.500
+    df["fib_62"] = swing_high - fib_range * 0.618
+    tol = c * 0.005   # within 0.5% of price counts as "at the level"
+    df["near_fib_support"] = (
+        (abs(c - df["fib_38"]) < tol) |
+        (abs(c - df["fib_50"]) < tol) |
+        (abs(c - df["fib_62"]) < tol)
+    )
+
     return df
 
 

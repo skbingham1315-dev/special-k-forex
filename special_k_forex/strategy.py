@@ -91,6 +91,27 @@ class ForexETFStrategy:
             score += 1
             notes.append("macd_turning")
 
+        # ── New: volume & divergence confirmation (Wyckoff + RSI divergence) ─
+        if last.get("obv_trending_up", False):
+            score += 1
+            notes.append("obv_accumulation")
+
+        if last.get("vol_declining_pullback", False):
+            score += 1
+            notes.append("vol_drying_up")    # healthy Wyckoff retracement
+
+        if last.get("rsi_bull_divergence", False):
+            score += 2
+            notes.append("rsi_bull_divergence")   # strongest reversal signal
+
+        if last.get("near_fib_support", False):
+            score += 1
+            notes.append("fib_support_zone")   # Constance Brown entry zone
+
+        if last.get("bb_squeeze", False):
+            score += 1
+            notes.append("bb_squeeze")   # volatility coiling = bigger move ahead
+
         atr_value = float(last["atr14"])
         close = float(last["close"])
 
@@ -190,6 +211,19 @@ class ForexETFStrategy:
             score += 1
             notes.append("macd_bearish")
 
+        # ── New: volume & divergence confirmation for shorts ──────────────
+        if not last.get("obv_trending_up", True):   # OBV falling = distribution
+            score += 1
+            notes.append("obv_distribution")
+
+        if last.get("rsi_bear_divergence", False):  # price up but RSI fading
+            score += 2
+            notes.append("rsi_bear_divergence")
+
+        if last.get("bb_squeeze", False):
+            score += 1
+            notes.append("bb_squeeze")
+
         atr_value = float(last["atr14"])
         close = float(last["close"])
 
@@ -270,6 +304,23 @@ class ForexETFStrategy:
         if last["avg_dollar_volume20"] >= settings.min_avg_dollar_volume:
             score += 1
             notes.append("liquid")
+
+        # ── New: strongest reversal confirmation signals ───────────────────
+        if last.get("rsi_bull_divergence", False):   # price lower but RSI higher
+            score += 3
+            notes.append("rsi_bull_divergence")   # very strong bounce signal
+
+        if last.get("obv_trending_up", False):       # money still flowing in
+            score += 1
+            notes.append("obv_accumulation")
+
+        if last.get("near_fib_support", False):      # at Fibonacci support level
+            score += 2
+            notes.append("fib_support_zone")
+
+        if last.get("vol_declining_pullback", False): # volume drying on drop
+            score += 1
+            notes.append("vol_drying_up")
 
         atr_value = float(last["atr14"])
         close = float(last["close"])
