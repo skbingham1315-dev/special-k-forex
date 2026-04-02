@@ -1000,6 +1000,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <span id="clock">--:--:--</span>
 <span id="countdown" style="color:var(--yellow);font-size:11px"></span>
 <span id="hedge-header-badge" style="font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:3px;background:rgba(74,98,120,.3);color:var(--dim)">HEDGE</span>
+<span id="conn-badge" style="display:none;font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:3px;background:rgba(255,68,102,.15);color:var(--red);border:1px solid rgba(255,68,102,.3)">⚠ OFFLINE</span>
 <button id="mode-btn" onclick="toggleMode()" style="font-family:var(--mono);font-size:10px;padding:4px 10px;border-radius:3px;border:1px solid var(--green);color:var(--green);background:rgba(0,255,136,.05);cursor:pointer">PAPER</button>
 <a href="/logout" class="lbtn">LOGOUT</a>
 </div>
@@ -1353,6 +1354,7 @@ async function loadOverview(){
   try{
     const r=await fetch('/api/account');const d=await r.json();
     if(d.error){lg('Account error: '+d.error,'warn');}
+    document.getElementById('conn-badge').style.display='none';
     const a=d.account||{};
     document.getElementById('s-equity').textContent=f$(a.equity);
     document.getElementById('s-cash').textContent=f$(a.cash);
@@ -1402,7 +1404,14 @@ async function loadOverview(){
     const ks=Object.keys(b).sort((a,b)=>+a-+b);
     if(ks.length)mk('pnlDistChart',cc('bar',ks.map(k=>'$'+k),[{data:ks.map(k=>b[k]),backgroundColor:ks.map(k=>+k>=0?'rgba(0,255,136,.5)':'rgba(255,68,102,.5)'),borderColor:ks.map(k=>+k>=0?GR:RE),borderWidth:1}]));
     loadPeriods();
-  }catch(e){lg('Account error: '+e.message,'warn');}
+  }catch(e){
+    const cb=document.getElementById('conn-badge');
+    if(e.message&&e.message.toLowerCase().includes('fetch')){
+      if(cb)cb.style.display='inline';
+    }else{
+      lg('Account error: '+e.message,'warn');
+    }
+  }
   try{
     const sr=await fetch('/api/status');const sd=await sr.json();
     const ss=document.getElementById('sys-status');
