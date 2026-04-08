@@ -11,7 +11,7 @@ from .config import Settings as Config
 from .crypto_data import CryptoDataClient, CRYPTO_SYMBOLS
 from .indicators import compute_indicators, classify_regime
 from .risk import RiskManager
-from .strategy import TrendPullbackStrategy
+from .strategy import ForexETFStrategy as TrendPullbackStrategy
 
 log = logging.getLogger(__name__)
 

@@ -70,7 +70,7 @@ def analyse_signal(
     """
     client = _get_client()
     if client is None:
-        return {"confidence": 7, "action": "enter", "reason": "AI analysis unavailable — proceeding on quant score.", "raw": ""}
+        return {"confidence": 5, "action": "enter", "reason": "AI analysis unavailable — proceeding at reduced confidence.", "raw": ""}
 
     trend_desc = "above both SMA50 and SMA200 (uptrend)" if price > sma50 > sma200 else \
                  "above SMA50 but below SMA200 (partial trend)" if price > sma50 else \
@@ -140,7 +140,7 @@ Rules:
         return {"confidence": confidence, "action": action, "reason": reason, "raw": raw}
     except Exception as e:
         log.warning(f"AI analysis failed for {symbol}: {e}")
-        return {"confidence": 7, "action": "enter", "reason": f"AI error — proceeding on quant score.", "raw": ""}
+        return {"confidence": 5, "action": "enter", "reason": f"AI error — proceeding at reduced confidence.", "raw": ""}
 
 
 def analyse_market_overview(symbols_data: list) -> str:

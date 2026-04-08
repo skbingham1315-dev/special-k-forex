@@ -10,6 +10,15 @@ from .strategy import ForexETFStrategy
 from .ai_analyst import analyse_signal
 from .political_tracker import get_political_signal
 from .hedge import HedgeManager, HEDGE_INSTRUMENTS
+from .legendary_trader_rules import score_trade_signal
+
+try:
+    from .trend_memory import get_symbol_memory
+    _TREND_MEMORY_AVAILABLE = True
+except ImportError:
+    _TREND_MEMORY_AVAILABLE = False
+    def get_symbol_memory(symbol):
+        return {}
 
 
 def _regime_from_bars(bars) -> str:
@@ -193,6 +202,19 @@ class ForexEngine:
             # ── AI validation ───────────────────────────────────────────────
             last_df  = compute_indicators(self.fetcher.get_daily_bars(symbol) or bars)
             last_row = last_df.iloc[-1]
+
+            # Pull trend memory if available — gives Claude context beyond current bar
+            sym_mem    = get_symbol_memory(symbol)
+            trend_ctx  = None
+            if sym_mem:
+                trend_ctx = (
+                    f"Trend memory: {sym_mem.get('trend_direction','?')} / "
+                    f"{sym_mem.get('trend_strength','?')} | "
+                    f"Pattern: {sym_mem.get('pattern_notes','')} | "
+                    f"Watch for: {sym_mem.get('watch_for','')} | "
+                    f"Macro: {sym_mem.get('macro_context','')}"
+                )
+
             ai = analyse_signal(
                 symbol=symbol,
                 pair=getattr(self.config, "forex_pairs", {}).get(symbol, symbol),
@@ -207,17 +229,18 @@ class ForexEngine:
                 pullback_10d_pct=float(last_row.get("pullback_10d_pct", 0) or 0),
                 notes=signal.notes,
                 political_activity=pol["summary"] if (pol["buys"] or pol["sells"]) else None,
+                trend_memory=trend_ctx,
                 direction=signal.direction,
             )
 
             logger.info(f"  {symbol}: AI conf={ai['confidence']} action={ai['action']} [{signal.direction}] — {ai['reason']}")
 
-            # Hard skip only on very low confidence — AI adjusts size, doesn't block valid quant signals
-            if ai["confidence"] <= 2:
-                logger.info(f"  {symbol}: AI hard reject (conf≤2) — skipping.")
+            # Hard skip on low confidence — raised from ≤3 to ≤4 for tighter quality control
+            if ai["confidence"] <= 4:
+                logger.info(f"  {symbol}: AI hard reject (conf≤4) — skipping.")
                 continue
 
-            if ai["action"] == "skip" or ai["confidence"] <= 4:
+            if ai["action"] == "skip" or ai["confidence"] <= 5:
                 risk_pct    *= 0.25
                 max_pos_pct *= 0.25
                 logger.info(f"  {symbol}: AI low conf — quarter size.")
@@ -250,11 +273,40 @@ class ForexEngine:
                 logger.info(f"  {symbol}: qty too small after sizing — skipping.")
                 continue
 
-            # Minimum R:R gate — reject trades with poor reward-to-risk ratio
-            MIN_RR = 1.5
+            # Minimum R:R gate — must achieve at least 2:1 reward to risk.
+            # Wyckoff ideal is 3:1 but 2:1 allows tighter setups while still having edge.
+            MIN_RR = 2.0
             if plan.risk_reward_ratio > 0 and plan.risk_reward_ratio < MIN_RR:
                 logger.info(f"  {symbol}: R:R {plan.risk_reward_ratio:.2f} < {MIN_RR} minimum — skipping.")
                 continue
+
+            # ── Legendary Trader quality gate (long signals only) ────────────
+            # Short/bounce signals skip the market-uptrend gate since they trade
+            # in downtrends by design. Apply the full legendary filter to longs only.
+            if signal.direction == "long":
+                _bars      = self.fetcher.get_daily_bars(symbol) or bars
+                _prices    = _bars["close"].tolist()
+                _volumes   = _bars["volume"].tolist()
+                _sma150    = float(last_row.get("sma150", last_row.get("sma50", price)) or price)
+                lt = score_trade_signal(
+                    symbol=symbol,
+                    price_series=_prices,
+                    volume_series=_volumes,
+                    sma_50=float(last_row.get("sma50", price) or price),
+                    sma_150=_sma150,
+                    sma_200=float(last_row.get("sma200", price) or price),
+                    atr=atr,
+                    entry_price=price,
+                    stop_price=stop,
+                    target_price=tp,
+                )
+                logger.info(
+                    f"  {symbol}: LegendaryScore={lt['score']}/{lt['max_possible']} "
+                    f"recommend={lt['recommend']} | {lt['breakdown']}"
+                )
+                if lt["score"] < 5:
+                    logger.info(f"  {symbol}: LegendaryTrader veto (score={lt['score']}<5) — skipping long.")
+                    continue
 
             logger.info(
                 f"  ENTRY [{signal.direction.upper()}] {symbol}: qty={plan.qty} "

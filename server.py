@@ -111,12 +111,19 @@ def _trend_memory_daily_loop():
 # ── Risk params ───────────────────────────────────────────────────────────────
 def get_risk_params():
     r = RISK_LEVEL["value"]
+    # Stop gets tighter as risk increases (more aggressive entries)
+    stop_mult = round(1.8 - (r - 1) * 0.06, 2)   # r=1→1.80, r=10→1.26
+    # TP is always 2.5x the stop multiplier — guarantees ≥2.5 R:R at every risk level
+    tp_mult   = round(stop_mult * 2.6, 2)
+    # min_signal_score: higher risk allows more positions but requires SAME quality
+    # floor at 5 so we never allow garbage signals regardless of risk setting
+    min_score = max(5, 8 - r // 2)               # r=1→8, r=5→6, r=10→5
     return {
-        "risk_per_trade_pct":       round(0.25 + (r - 1) * 0.2, 2),
-        "stop_atr_multiplier":      round(2.0 - (r - 1) * 0.1, 2),
-        "take_profit_atr_multiplier": round(1.5 + (r - 1) * 0.3, 2),
-        "min_signal_score":         max(3, 7 - r),
-        "max_positions":            min(2 + r // 3, 5),
+        "risk_per_trade_pct":           round(0.25 + (r - 1) * 0.2, 2),
+        "stop_atr_multiplier":          stop_mult,
+        "take_profit_atr_multiplier":   tp_mult,
+        "min_signal_score":             min_score,
+        "max_positions":                min(2 + r // 3, 6),
     }
 
 def is_market_open():
@@ -156,10 +163,10 @@ def _prioritise_symbols(symbols: list) -> list:
     except Exception:
         return symbols
 
-def run_engine():
+def run_engine(dry=None):
     try:
         params = get_risk_params()
-        dry = not LIVE_MODE["value"]
+        dry = dry if dry is not None else not LIVE_MODE["value"]
         log.info(f"Running forex engine | live={LIVE_MODE['value']}")
         from special_k_forex.engine import ForexEngine
         from special_k_forex.config import Settings
@@ -391,6 +398,7 @@ def api_scan():
         from special_k_forex.ai_analyst import analyse_signal, analyse_market_overview
         from special_k_forex.political_tracker import get_political_signal
         from special_k_forex.trend_memory import get_symbol_memory, get_macro_overview
+        from special_k_forex.legendary_trader_rules import score_trade_signal as _lt_score
         import pandas as _pd
         client = MarketDataClient(); strat = ForexETFStrategy(); results = []
         def _safe(val, rnd=4):
@@ -437,6 +445,28 @@ def api_scan():
                     trend_memory=trend_ctx,
                     direction=sig.direction,
                 )
+            # ── Legendary Trader score for research tab display ───────────
+            lt_result = None
+            if sig and sig.direction == "long":
+                try:
+                    _prices  = bars["close"].tolist()
+                    _volumes = bars["volume"].tolist()
+                    _sma150  = _safe(last.get("sma150")) or _safe(last.get("sma50")) or 0
+                    lt_result = _lt_score(
+                        symbol=sym,
+                        price_series=_prices,
+                        volume_series=_volumes,
+                        sma_50=_safe(last.get("sma50")) or 0,
+                        sma_150=_sma150,
+                        sma_200=_safe(last.get("sma200")) or 0,
+                        atr=_safe(last.get("atr14")) or 0,
+                        entry_price=_safe(last["close"]) or 0,
+                        stop_price=sig.stop_price,
+                        target_price=sig.take_profit_price,
+                    )
+                except Exception:
+                    lt_result = None
+
             results.append({
                 "symbol": sym, "pair": FOREX_PAIRS.get(sym,sym),
                 "signal":    sig.action    if sig else None,
@@ -450,6 +480,7 @@ def api_scan():
                 "last_close": _safe(last["close"]),
                 "rsi":    _safe(last.get("rsi"), 1),
                 "sma50":  _safe(last.get("sma50")),
+                "sma150": _safe(last.get("sma150")),
                 "sma200": _safe(last.get("sma200")),
                 "atr":    _safe(last.get("atr14")),
                 "bb_upper": _safe(last.get("bb_upper")),
@@ -462,6 +493,10 @@ def api_scan():
                 "ai_confidence": ai_data.get("confidence"),
                 "ai_action": ai_data.get("action"),
                 "ai_reason": ai_data.get("reason"),
+                "legendary_score":    lt_result["score"]        if lt_result else None,
+                "legendary_max":      lt_result["max_possible"] if lt_result else None,
+                "legendary_recommend": lt_result["recommend"]   if lt_result else None,
+                "legendary_breakdown": lt_result["breakdown"]   if lt_result else None,
             })
         results.sort(key=lambda x: x["score"], reverse=True)
         # Market overview from Claude
@@ -550,17 +585,22 @@ def api_periods():
 
         def build_period(start):
             pts = [t for t in closed if (parse_date(t) or _date.min) >= start]
-            baseline = equity_at(start)
-            pnl = round(current_equity - baseline, 2) if baseline and current_equity \
-                  else round(sum(float(t.get("pnl") or 0) for t in pts), 2)
+            # Always use sum of actual closed trade P&Ls — never equity delta.
+            # Equity delta includes deposits/withdrawals which are NOT trading income.
+            pnl = round(sum(float(t.get("pnl") or 0) for t in pts), 2)
             wins = sum(1 for t in pts if float(t.get("pnl") or 0) > 0)
             count = len(pts)
             return {"pnl": pnl, "pnl_pct": round(pnl/current_equity*100,2) if current_equity else 0,
                     "trades": count, "wins": wins, "win_rate": round(wins/count*100,1) if count else 0}
 
+        # Daily average P&L from closed trades only (excludes deposits/withdrawals)
         daily_avg = 0.0
-        if eq_history and len(eq_history) >= 2:
-            daily_avg = round((eq_history[-1]["equity"] - eq_history[0]["equity"]) / max(len(eq_history),1), 2)
+        if closed:
+            all_days = sorted({parse_date(t) for t in closed if parse_date(t)})
+            if all_days:
+                total_trade_pnl = sum(float(t.get("pnl") or 0) for t in closed)
+                trading_days = max(len(all_days), 1)
+                daily_avg = round(total_trade_pnl / trading_days, 2)
 
         result = {
             "week":  build_period(week_start),
@@ -588,6 +628,25 @@ def api_status():
     h, rem = divmod(int(up.total_seconds()), 3600); m = rem // 60
     open_t  = sum(1 for t in TRADE_LOG if t.get("status")=="open")
     closed_t = sum(1 for t in TRADE_LOG if t.get("status")=="closed")
+
+    # AI connection health check
+    import os as _os
+    _anthr_key = _os.getenv("ANTHROPIC_API_KEY", "").strip()
+    ai_connected = bool(_anthr_key)
+    ai_model = "claude-haiku-4-5-20251001"
+
+    # Trend memory status
+    try:
+        from special_k_forex.trend_memory import get_all_memory, needs_refresh as _needs_refresh
+        _mem = get_all_memory()
+        trend_symbols_loaded = len(_mem.get("symbols", {}))
+        trend_memory_stale   = _needs_refresh()
+        trend_last_updated   = _mem.get("last_updated") or "never"
+    except Exception:
+        trend_symbols_loaded = 0
+        trend_memory_stale   = True
+        trend_last_updated   = "unavailable"
+
     return jsonify({
         "server_start": _SERVER_START.strftime("%Y-%m-%d %H:%M UTC"),
         "uptime": f"{h}h {m}m",
@@ -598,6 +657,11 @@ def api_status():
         "mode": "LIVE" if LIVE_MODE["value"] else "PAPER",
         "market_open": is_market_open(),
         "buying_power": None,
+        "ai_connected": ai_connected,
+        "ai_model": ai_model,
+        "trend_symbols_loaded": trend_symbols_loaded,
+        "trend_memory_stale": trend_memory_stale,
+        "trend_last_updated": trend_last_updated,
     })
 
 @app.route("/api/market_intelligence")
@@ -742,9 +806,9 @@ def api_crypto_scan():
     try:
         from special_k_forex.crypto_data import CryptoDataClient, CRYPTO_SYMBOLS
         from special_k_forex.indicators import compute_indicators
-        from special_k_forex.strategy import TrendPullbackStrategy
+        from special_k_forex.strategy import ForexETFStrategy
         client   = CryptoDataClient()
-        strategy = TrendPullbackStrategy()
+        strategy = ForexETFStrategy()
         results  = []
         for sym in CRYPTO_SYMBOLS:
             bars = client.get_daily_bars(sym, lookback_days=100)
@@ -1425,6 +1489,8 @@ async function loadOverview(){
         `<div style="color:var(--dim)">Last Run</div><div style="color:var(--dim)">${sd.last_engine_run}</div>`+
         `<div style="color:var(--dim)">Open Trades</div><div style="color:var(--accent)">${sd.open_trades}</div>`+
         `<div style="color:var(--dim)">Closed Trades</div><div>${sd.closed_trades}</div>`+
+        `<div style="color:var(--dim)">AI Brain</div><div>${sd.ai_connected?'<span style="color:var(--green)">● CONNECTED</span>':'<span style="color:var(--red)">● NO KEY</span>'}</div>`+
+        `<div style="color:var(--dim)">Trend Memory</div><div style="${sd.trend_memory_stale?'color:var(--dim)':'color:var(--green)'}">${sd.trend_symbols_loaded} symbols${sd.trend_memory_stale?' (stale)':' ✓'}</div>`+
         `</div>`;
     }
   }catch(e){}
@@ -1595,8 +1661,17 @@ async function loadResearch(){
         </div>
         <div class="ind-row"><span class="ind-lbl">RSI</span><div class="ind-bar"><div class="ind-fill" style="width:${rsiPct}%;background:${rsiColor}"></div></div><span class="ind-val" style="color:${rsiColor}">${s.rsi!=null?s.rsi.toFixed(1):'--'}</span></div>
         <div class="ind-row"><span class="ind-lbl">SMA50</span><div class="ind-bar"><div class="ind-fill" style="width:${s.sma50&&s.last_close?Math.min(s.last_close/s.sma50*100,110)-10:0}%;background:var(--accent)"></div></div><span class="ind-val">${s.sma50!=null?s.sma50.toFixed(4):'--'}</span></div>
+        <div class="ind-row"><span class="ind-lbl">SMA150</span><div class="ind-bar"><div class="ind-fill" style="width:${s.sma150&&s.last_close?Math.min(s.last_close/s.sma150*100,110)-10:0}%;background:#7788ff"></div></div><span class="ind-val">${s.sma150!=null?s.sma150.toFixed(4):'--'}</span></div>
         <div class="ind-row"><span class="ind-lbl">SMA200</span><div class="ind-bar"><div class="ind-fill" style="width:${s.sma200&&s.last_close?Math.min(s.last_close/s.sma200*100,110)-10:0}%;background:var(--yellow)"></div></div><span class="ind-val">${s.sma200!=null?s.sma200.toFixed(4):'--'}</span></div>
         ${notes?`<div style="margin-top:10px;display:flex;gap:5px;flex-wrap:wrap">${notes}</div>`:''}
+        ${s.legendary_score!=null?`<div style="margin-top:8px;padding:8px 10px;border-radius:4px;background:rgba(255,180,0,.04);border:1px solid rgba(255,180,0,.15)">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:1px">LEGENDARY SCORE</span>
+            <div style="flex:1;height:4px;background:#0f1a24;border-radius:2px"><div style="width:${Math.round(s.legendary_score/s.legendary_max*100)}%;height:100%;background:${s.legendary_recommend?'#ffc107':'var(--dim)'};border-radius:2px"></div></div>
+            <span style="font-family:var(--mono);font-size:12px;color:${s.legendary_recommend?'#ffc107':'var(--dim)'};font-weight:bold">${s.legendary_score}/${s.legendary_max}</span>
+            <span style="font-family:var(--mono);font-size:10px;padding:1px 7px;border-radius:3px;background:${s.legendary_recommend?'rgba(255,193,7,.15)':'rgba(74,98,120,.15)'};color:${s.legendary_recommend?'#ffc107':'var(--dim)';border:1px solid ${s.legendary_recommend?'rgba(255,193,7,.3)':'var(--border)'}">${s.legendary_recommend?'✓ APPROVED':'✗ VETOED'}</span>
+          </div>
+        </div>`:''}
         ${aiBlock}${polBlock}
       </div>`;
     }).join('');
@@ -1644,6 +1719,8 @@ async function loadControl(){
         `<div style="color:var(--dim)">Last Result</div><div style="color:var(--dim)">${sd.last_engine_result}</div>`+
         `<div style="color:var(--dim)">Open Trades</div><div style="color:var(--accent)">${sd.open_trades}</div>`+
         `<div style="color:var(--dim)">Closed Trades</div><div>${sd.closed_trades}</div>`+
+        `<div style="color:var(--dim)">AI Brain</div><div>${sd.ai_connected?'<span style="color:var(--green)">● CONNECTED</span>':'<span style="color:var(--red)">● NO KEY</span>'}</div>`+
+        `<div style="color:var(--dim)">Trend Memory</div><div style="${sd.trend_memory_stale?'color:var(--dim)':'color:var(--green)'}">${sd.trend_symbols_loaded} symbols${sd.trend_memory_stale?' (stale)':' ✓'}</div>`+
         `</div>`;
     }
   }catch(e){}

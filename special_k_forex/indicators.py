@@ -9,6 +9,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     v = df["volume"]
 
     df["sma50"]  = c.rolling(50).mean()
+    df["sma150"] = c.rolling(150).mean()
     df["sma200"] = c.rolling(200).mean()
     df["ema9"]   = c.ewm(span=9, adjust=False).mean()
     df["ema20"]  = c.ewm(span=20, adjust=False).mean()
