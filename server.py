@@ -602,6 +602,22 @@ def api_periods():
                 trading_days = max(len(all_days), 1)
                 daily_avg = round(total_trade_pnl / trading_days, 2)
 
+        # ── Cumulative trade P&L chart (deposits excluded) ──────────────────
+        # Group closed trades by date, accumulate P&L day by day.
+        # This replaces the raw equity chart which was inflated by deposits.
+        pnl_by_date: dict = {}
+        for t in closed:
+            d = parse_date(t)
+            if d:
+                pnl_by_date[d] = pnl_by_date.get(d, 0.0) + float(t.get("pnl") or 0)
+
+        cumulative_pnl = []
+        running = 0.0
+        for d in sorted(pnl_by_date):
+            running += pnl_by_date[d]
+            cumulative_pnl.append({"date": d.isoformat(), "pnl": round(running, 2)})
+
+        # Keep equity_history for reference (account value) but primary chart is cumulative P&L
         result = {
             "week":  build_period(week_start),
             "month": build_period(month_start),
@@ -614,6 +630,7 @@ def api_periods():
                 "annualized_return_pct": round(daily_avg*252/current_equity*100,2) if current_equity else 0,
             },
             "equity_history": eq_history[-90:],
+            "cumulative_pnl": cumulative_pnl,
         }
         _periods_cache["data"] = result; _periods_cache["at"] = _time.time()
         return jsonify(result)
@@ -1128,7 +1145,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
   <div class="sc"><div class="lb">Proj Year</div><div class="val" id="pj-yr">--</div></div>
   <div class="sc"><div class="lb">Ann. Return</div><div class="val" id="pj-ann">--</div></div>
 </div>
-<div style="font-family:var(--mono);font-size:10px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;margin:14px 0 8px">Equity History</div>
+<div style="font-family:var(--mono);font-size:10px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;margin:14px 0 8px">Cumulative Trading P&amp;L (deposits excluded)</div>
 <canvas id="equityHistChart" height="100"></canvas>
 </div>
 
@@ -1380,8 +1397,15 @@ async function loadPeriods(){
     pv('pj-yr',f$(proj.projected_year));pc('pj-yr',proj.projected_year);
     const ann=proj.annualized_return_pct;
     pv('pj-ann',ann!=null?(ann>=0?'+':'')+ann.toFixed(2)+'%':'--');pc('pj-ann',ann);
-    const eq=d.equity_history||[];
-    if(eq.length>=2)mk('equityHistChart',cc('line',eq.map(e=>e.date.slice(5)),[{data:eq.map(e=>e.equity),borderColor:AC,backgroundColor:'rgba(0,229,255,.05)',fill:true,tension:.3,pointRadius:eq.length<=30?3:1,borderWidth:1.5}]));
+    const cpnl=d.cumulative_pnl||[];
+    if(cpnl.length>=1){
+      const color=cpnl.length&&cpnl[cpnl.length-1].pnl>=0?'rgba(0,255,136,1)':'rgba(255,68,102,1)';
+      const bgColor=cpnl.length&&cpnl[cpnl.length-1].pnl>=0?'rgba(0,255,136,.07)':'rgba(255,68,102,.07)';
+      mk('equityHistChart',cc('line',cpnl.map(e=>e.date.slice(5)),[{data:cpnl.map(e=>e.pnl),borderColor:color,backgroundColor:bgColor,fill:true,tension:.3,pointRadius:cpnl.length<=30?3:1,borderWidth:1.5}]));
+    } else {
+      const eq=d.equity_history||[];
+      if(eq.length>=2)mk('equityHistChart',cc('line',eq.map(e=>e.date.slice(5)),[{data:eq.map(e=>e.equity),borderColor:AC,backgroundColor:'rgba(0,229,255,.05)',fill:true,tension:.3,pointRadius:eq.length<=30?3:1,borderWidth:1.5}]));
+    }
   }catch(e){console.error('Periods error:',e);}
 }
 function showPeriod(period,btn){
