@@ -78,7 +78,7 @@ class Broker:
     ):
         if qty < 0.001:
             raise ValueError("Quantity must be at least 0.001.")
-        limit_price = round(max(quote_ask, 0.01) * 1.0005, 4)
+        limit_price = round(max(quote_ask, 0.01) * 1.003, 4)  # 0.3% above — fills at open reliably
 
         # Alpaca does not allow bracket orders for fractional shares — use simple limit
         is_fractional = (qty % 1) != 0
@@ -117,7 +117,7 @@ class Broker:
         """Short sell with bracket orders. Stop is above entry, target is below."""
         if qty < 0.001:
             raise ValueError("Quantity must be at least 0.001.")
-        limit_price = round(max(quote_bid, 0.01) * 0.9995, 4)  # slightly below bid
+        limit_price = round(max(quote_bid, 0.01) * 0.997, 4)  # 0.3% below bid — fills at open reliably
 
         # Alpaca does not allow bracket orders for fractional shares — use simple limit
         is_fractional = (qty % 1) != 0

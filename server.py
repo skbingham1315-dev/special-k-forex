@@ -63,6 +63,8 @@ _SERVER_START    = datetime.datetime.utcnow()
 _LAST_ENGINE_RUN = {"time": None, "result": "not run yet"}
 _periods_cache   = {"data": None, "at": 0.0}
 _PERIODS_TTL     = 900
+_scan_cache      = {"data": None, "at": 0.0}
+_SCAN_TTL        = 600   # 10 minutes — scan is expensive (16 Claude calls)
 _prev_close_cache = {}
 
 # ── Currency ETF reference ────────────────────────────────────────────────────
@@ -222,6 +224,7 @@ def scheduler_loop():
 
 threading.Thread(target=scheduler_loop, daemon=True).start()
 threading.Thread(target=_trend_memory_daily_loop, daemon=True).start()
+threading.Thread(target=_run_scan_background, daemon=True).start()   # pre-warm scan cache on startup
 log.info("Forex scheduler started - runs every 5 min during market hours")
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -386,10 +389,8 @@ def api_quotes():
     except Exception as e:
         return jsonify({"error": str(e), "quotes": {}})
 
-@app.route("/api/scan")
-@login_required
-def api_scan():
-    """Score all watchlist symbols and return signals — forex research tab."""
+def _run_scan_background():
+    """Run the full scan in background and populate the scan cache."""
     try:
         from special_k_forex.config import settings
         from special_k_forex.data import MarketDataClient
@@ -397,7 +398,7 @@ def api_scan():
         from special_k_forex.strategy import ForexETFStrategy
         from special_k_forex.ai_analyst import analyse_signal, analyse_market_overview
         from special_k_forex.political_tracker import get_political_signal
-        from special_k_forex.trend_memory import get_symbol_memory, get_macro_overview
+        from special_k_forex.trend_memory import get_symbol_memory
         from special_k_forex.legendary_trader_rules import score_trade_signal as _lt_score
         import pandas as _pd
         client = MarketDataClient(); strat = ForexETFStrategy(); results = []
@@ -413,7 +414,6 @@ def api_scan():
             long_sig   = strat.evaluate(sym, bars)
             short_sig  = strat.evaluate_short(sym, bars)
             bounce_sig = strat.evaluate_bounce(sym, bars)
-            # Best signal across all directions
             all_sigs = [s for s in [long_sig, short_sig, bounce_sig] if s is not None]
             sig = max(all_sigs, key=lambda s: s.score) if all_sigs else None
             pol = get_political_signal(sym)
@@ -445,7 +445,6 @@ def api_scan():
                     trend_memory=trend_ctx,
                     direction=sig.direction,
                 )
-            # ── Legendary Trader score for research tab display ───────────
             lt_result = None
             if sig and sig.direction == "long":
                 try:
@@ -453,57 +452,65 @@ def api_scan():
                     _volumes = bars["volume"].tolist()
                     _sma150  = _safe(last.get("sma150")) or _safe(last.get("sma50")) or 0
                     lt_result = _lt_score(
-                        symbol=sym,
-                        price_series=_prices,
-                        volume_series=_volumes,
-                        sma_50=_safe(last.get("sma50")) or 0,
-                        sma_150=_sma150,
+                        symbol=sym, price_series=_prices, volume_series=_volumes,
+                        sma_50=_safe(last.get("sma50")) or 0, sma_150=_sma150,
                         sma_200=_safe(last.get("sma200")) or 0,
                         atr=_safe(last.get("atr14")) or 0,
                         entry_price=_safe(last["close"]) or 0,
-                        stop_price=sig.stop_price,
-                        target_price=sig.take_profit_price,
+                        stop_price=sig.stop_price, target_price=sig.take_profit_price,
                     )
                 except Exception:
                     lt_result = None
-
             results.append({
                 "symbol": sym, "pair": FOREX_PAIRS.get(sym,sym),
-                "signal":    sig.action    if sig else None,
-                "direction": sig.direction if sig else None,
-                "score":     sig.score     if sig else 0,
-                "notes":     sig.notes     if sig else [],
-                "long_score":   long_sig.score   if long_sig   else 0,
-                "short_score":  short_sig.score  if short_sig  else 0,
+                "signal": sig.action if sig else None, "direction": sig.direction if sig else None,
+                "score": sig.score if sig else 0, "notes": sig.notes if sig else [],
+                "long_score": long_sig.score if long_sig else 0,
+                "short_score": short_sig.score if short_sig else 0,
                 "bounce_score": bounce_sig.score if bounce_sig else 0,
-                "regime": regime,
-                "last_close": _safe(last["close"]),
-                "rsi":    _safe(last.get("rsi"), 1),
-                "sma50":  _safe(last.get("sma50")),
-                "sma150": _safe(last.get("sma150")),
-                "sma200": _safe(last.get("sma200")),
-                "atr":    _safe(last.get("atr14")),
-                "bb_upper": _safe(last.get("bb_upper")),
+                "regime": regime, "last_close": _safe(last["close"]),
+                "rsi": _safe(last.get("rsi"), 1), "sma50": _safe(last.get("sma50")),
+                "sma150": _safe(last.get("sma150")), "sma200": _safe(last.get("sma200")),
+                "atr": _safe(last.get("atr14")), "bb_upper": _safe(last.get("bb_upper")),
                 "bb_lower": _safe(last.get("bb_lower")),
                 "trend_up": bool(_safe(last.get("sma50")) and _safe(last.get("sma200")) and float(last["close"]) > float(last["sma50"]) > float(last["sma200"])),
-                "macd_hist": _safe(last.get("macd_hist"), 5),
-                "adx": _safe(last.get("adx"), 1),
-                "pullback_10d_pct": _safe(last.get("pullback_10d_pct"), 2),
-                "political": pol,
-                "ai_confidence": ai_data.get("confidence"),
-                "ai_action": ai_data.get("action"),
+                "macd_hist": _safe(last.get("macd_hist"), 5), "adx": _safe(last.get("adx"), 1),
+                "pullback_10d_pct": _safe(last.get("pullback_10d_pct"), 2), "political": pol,
+                "ai_confidence": ai_data.get("confidence"), "ai_action": ai_data.get("action"),
                 "ai_reason": ai_data.get("reason"),
-                "legendary_score":    lt_result["score"]        if lt_result else None,
-                "legendary_max":      lt_result["max_possible"] if lt_result else None,
-                "legendary_recommend": lt_result["recommend"]   if lt_result else None,
-                "legendary_breakdown": lt_result["breakdown"]   if lt_result else None,
+                "legendary_score": lt_result["score"] if lt_result else None,
+                "legendary_max": lt_result["max_possible"] if lt_result else None,
+                "legendary_recommend": lt_result["recommend"] if lt_result else None,
+                "legendary_breakdown": lt_result["breakdown"] if lt_result else None,
             })
         results.sort(key=lambda x: x["score"], reverse=True)
-        # Market overview from Claude
         overview = analyse_market_overview(results)
-        return jsonify({"results": results, "ai_overview": overview})
+        _scan_cache["data"] = {"results": results, "ai_overview": overview, "scanned_at": _time.time()}
+        _scan_cache["at"] = _time.time()
+        log.info(f"Background scan complete: {len(results)} symbols")
     except Exception as e:
-        log.error(f"/api/scan error: {e}"); return jsonify({"error": str(e), "results": []})
+        log.error(f"Background scan error: {e}")
+
+
+@app.route("/api/scan")
+@login_required
+def api_scan():
+    """Score all watchlist symbols and return signals — forex research tab."""
+    # Return cached results immediately if fresh (< 10 min old)
+    if _scan_cache["data"] and (_time.time() - _scan_cache["at"]) < _SCAN_TTL:
+        return jsonify(_scan_cache["data"])
+    # No fresh cache — kick off background scan and return skeleton immediately
+    threading.Thread(target=_run_scan_background, daemon=True).start()
+    return jsonify({"results": [], "ai_overview": "", "scanning": True, "message": "Scan started — refresh in 30 seconds"})
+
+# ── Scan trigger: also exposed as POST to force a fresh scan ─────────────────
+@app.route("/api/scan/refresh", methods=["POST"])
+@login_required
+def api_scan_refresh():
+    _scan_cache["data"] = None  # invalidate cache
+    threading.Thread(target=_run_scan_background, daemon=True).start()
+    return jsonify({"status": "scan started"})
+
 
 @app.route("/api/trade_log")
 @login_required
@@ -1224,7 +1231,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <div class="ph"><span class="pt">FX Research — Signal Scanner</span>
   <div style="display:flex;gap:8px">
     <button class="rb" onclick="loadIntelligence()" style="background:rgba(255,180,0,.12);color:#ffb400;border-color:rgba(255,180,0,.3)">AI Intelligence</button>
-    <button class="rb" onclick="loadResearch()">Scan Now</button>
+    <button class="rb" onclick="forceScan()">Scan Now</button>
   </div>
 </div>
 <div id="ai-overview" style="display:none;font-family:var(--mono);font-size:12px;color:var(--accent);background:rgba(0,229,255,.05);border:1px solid rgba(0,229,255,.15);border-radius:5px;padding:10px 14px;margin-bottom:12px;line-height:1.6"></div>
@@ -1627,11 +1634,20 @@ async function refreshIntelligence(){
 }
 
 // ── FX Research ────────────────────────────────────────────────────────────
+async function forceScan(){
+  await fetch('/api/scan/refresh',{method:'POST'});
+  const cards=document.getElementById('scan-cards');
+  cards.innerHTML='<div style="font-family:var(--mono);color:var(--accent);padding:20px">⟳ Scan running — AI analyzing 16 symbols... refresh in ~45 seconds</div>';
+  setTimeout(loadResearch, 45000);
+}
 async function loadResearch(){
   const cards=document.getElementById('scan-cards');
-  cards.innerHTML='<div style="font-family:var(--mono);color:var(--dim);padding:20px">Scanning...</div>';
   try{
     const r=await fetch('/api/scan');const d=await r.json();
+    if(d.scanning){
+      cards.innerHTML='<div style="font-family:var(--mono);color:var(--accent);padding:20px">⟳ AI scan running — analyzing all symbols... <button class="rb" style="margin-left:12px" onclick="setTimeout(loadResearch,30000);this.disabled=true;this.textContent=\'Waiting...\'">Check Again in 30s</button></div>';
+      return;
+    }
     const res=d.results||[];
     const syms=res.map(r=>r.symbol);
     const scores=res.map(r=>r.score||0);
