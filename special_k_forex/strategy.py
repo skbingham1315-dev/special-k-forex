@@ -354,27 +354,41 @@ class ForexETFStrategy:
             return False, ""
 
         rsi = float(last["rsi"])
+        close = float(last["close"])
+        sma50 = float(last["sma50"])
+        sma200 = float(last.get("sma200") or sma50)
 
         if side == "long":
-            if last["close"] < last["sma50"]:
+            # Standard exits
+            if close < sma50:
                 return True, "close_below_sma50"
             if rsi > 70:
                 return True, "rsi_overbought"
+            # Emergency: trend fully reversed (below SMA200) — original thesis broken
+            if close < sma200 * 0.995:
+                return True, "trend_reversed_below_sma200"
+            # Emergency: RSI collapsed while still above SMA50 (distribution in progress)
+            if rsi < 25 and close < sma50 * 1.01:
+                return True, "rsi_collapsed_near_sma50"
 
         elif side == "short":
             # Cover short when price reclaims SMA50 or gets oversold
-            if last["close"] > last["sma50"]:
+            if close > sma50:
                 return True, "close_above_sma50_cover"
             if rsi < 30:
                 return True, "rsi_oversold_cover"
+            # Emergency: price reclaimed SMA200 — downtrend over
+            if close > sma200 * 1.005:
+                return True, "trend_reversed_above_sma200"
 
         elif side == "bounce":
             # Exit bounce when RSI recovers to neutral zone or price hits SMA50
             if rsi > 45:
                 return True, "rsi_recovered"
-            if last["close"] > last["sma50"]:
+            if close > sma50:
                 return True, "price_above_sma50"
+            # Bounce failed — cut early rather than wait for stop
             if rsi < 12:
-                return True, "bounce_failed_cut"
+                return True, "bounce_failed_extreme_oversold"
 
         return False, ""

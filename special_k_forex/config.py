@@ -80,7 +80,7 @@ class Settings:
     atr_period: int = 14
 
     lookback_days: int = 400
-    min_signal_score: int = 4
+    min_signal_score: int = _env_int("MIN_SIGNAL_SCORE", 5)
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper().strip()
 
     def validate(self) -> None:

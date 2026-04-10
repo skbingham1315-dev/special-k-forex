@@ -75,7 +75,7 @@ class ForexEngine:
                 continue
             side = _position_side(pos)
             should_exit, exit_reason = self.strategy.should_exit(
-                compute_indicators(bars), side=side
+                bars, side=side
             )
             if should_exit:
                 logger.info(f"EXIT {symbol} [{side}]: {exit_reason}")

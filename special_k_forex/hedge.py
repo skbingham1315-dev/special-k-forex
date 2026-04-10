@@ -20,17 +20,34 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 # Maps a watched symbol to its hedge instrument
+# Forex ETFs: long non-USD currencies → hedge with UUP (dollar strengthens when they fall)
+# Country/equity ETFs: hedge with UUP (dollar is a safe haven in risk-off)
+# Commodities: GLD and SLV hedge each other; USO has no clean forex hedge
 HEDGE_MAP: Dict[str, str] = {
-    "FXE": "UUP",
-    "FXB": "UUP",
-    "FXA": "UUP",
-    "FXC": "UUP",
-    "FXY": "UUP",
-    "UUP": "FXE",   # if long dollar, hedge with euro
+    # Core forex ETFs
+    "FXE": "UUP",   # Euro → hedge with dollar
+    "FXB": "UUP",   # Pound → hedge with dollar
+    "FXA": "UUP",   # Aussie → hedge with dollar
+    "FXC": "UUP",   # CAD → hedge with dollar
+    "FXY": "UUP",   # Yen → hedge with dollar (yen falls when USD rises)
+    "FXF": "UUP",   # Swiss franc → hedge with dollar
+    "FXS": "UUP",   # Swedish krona → hedge with dollar
+    # Country equity ETFs (USD strength = risk-off headwind for international equities)
+    "EWJ": "UUP",   # Japan → hedge with dollar
+    "EWG": "UUP",   # Germany → hedge with dollar
+    "EWU": "UUP",   # UK → hedge with dollar
+    "EWH": "UUP",   # Hong Kong → hedge with dollar
+    "EEM": "UUP",   # Emerging markets → hedge with dollar
+    # Commodities
+    "GLD": "SLV",   # Gold → hedge with silver (both safe havens; move together)
+    "SLV": "GLD",   # Silver → hedge with gold
+    # UUP: hedge with FXE only if we have a UUP long that's losing
+    "UUP": "FXE",
 }
 
-# Instruments we treat as hedges (so the engine doesn't try to hedge hedges)
-HEDGE_INSTRUMENTS = set(HEDGE_MAP.values())
+# Instruments we treat as HEDGE-ONLY (engine entry pass skips these — managed by hedge pass)
+# Only UUP is hedge-only; all other symbols including FXE are fully tradeable
+HEDGE_INSTRUMENTS = {"UUP"}
 
 
 class HedgeManager:
