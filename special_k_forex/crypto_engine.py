@@ -1,6 +1,7 @@
 """
-Crypto Engine — runs 24/7, trades BTC/ETH/SOL etc. using the same
-bounce + trend strategy logic as the equity engine.
+Crypto Engine — runs 24/7, trades BTC/ETH/SOL etc. using the Special K v2.0
+crypto strategy with on-chain intelligence (Fear & Greed, BTC dominance,
+funding rates, news sentiment, BTC correlation rules).
 Uses Alpaca's crypto trading API (same TradingClient, GTC orders).
 """
 from __future__ import annotations
@@ -13,8 +14,16 @@ from .indicators import compute_indicators, classify_regime
 from .risk import RiskManager
 from .strategy import ForexETFStrategy as TrendPullbackStrategy
 from .ai_analyst import analyse_crypto_signal
+from .crypto_signals import (
+    get_market_context,
+    btc_flash_crash_active,
+    get_fear_greed,
+)
 
 log = logging.getLogger(__name__)
+
+# Symbols considered "majors" — tradeable during Bitcoin Season
+_BTC_MAJORS = {"BTC/USD", "ETH/USD", "BTCUSD", "ETHUSD"}
 
 
 def _place_crypto_bracket(broker_client, symbol: str, qty: float, price: float, stop: float, tp: float):
@@ -62,7 +71,38 @@ class CryptoEngine:
             log.warning("Kill switch active — skipping crypto trades.")
             return
 
-        # Get open positions (crypto positions have alpaca_sym format BTCUSD)
+        # ── Fetch market-wide context once (cached 1h) ────────────────────
+        mkt = get_market_context("BTC/USD")
+        fg  = mkt["fear_greed"]
+        dom = mkt["btc_dominance"]
+        news = mkt["news"]
+        btc_chg = mkt["btc_1h_change"]
+        bitcoin_season = mkt["bitcoin_season"]
+        on_chain_score = mkt["total_on_chain_score"]
+
+        log.info(
+            f"  Market context — F&G: {fg.get('value','?')} ({fg.get('label','?')}) | "
+            f"BTC Dom: {dom.get('pct','?'):.1f}% ({'rising' if dom.get('rising') else 'falling' if dom.get('rising') is False else '?'}) | "
+            f"BTC 1H: {btc_chg:+.2f}% | News: {news.get('bullish_count',0)}↑/{news.get('bearish_count',0)}↓ | "
+            f"On-chain score: {on_chain_score:+.2f}"
+        )
+
+        # ── Kill switch: Fear & Greed < 10 (capitulation) ─────────────────
+        if fg.get("available") and fg.get("value", 50) < 10:
+            log.warning("F&G capitulation (<10) — halting all crypto entries. Wait for bounce.")
+            return
+
+        # ── Kill switch: BTC flash crash (>3% drop in 1H) ─────────────────
+        if btc_flash_crash_active():
+            log.warning(f"BTC flash crash detected ({btc_chg:.2f}% in 1H) — halting all entries.")
+            return
+
+        # ── Kill switch: heavy bearish news ───────────────────────────────
+        if news.get("available") and news.get("bearish_count", 0) >= 4:
+            log.warning(f"Heavy bearish news ({news['bearish_count']} bearish headlines) — halting entries.")
+            return
+
+        # Get open positions
         try:
             positions = {p.symbol: p for p in broker.get_positions()}
         except Exception:
@@ -84,6 +124,11 @@ class CryptoEngine:
         if env_crypto:
             symbols_to_scan = [s.strip() for s in env_crypto.split(",") if s.strip()]
 
+        # ── Bitcoin Season: only majors ────────────────────────────────────
+        if bitcoin_season:
+            log.info(f"  Bitcoin Season active (BTC dom {dom.get('pct','?'):.1f}%) — restricting to BTC/ETH only.")
+            symbols_to_scan = [s for s in symbols_to_scan if s in _BTC_MAJORS]
+
         candidates = []
         for symbol in symbols_to_scan:
             alpaca_sym = symbol.replace("/", "")
@@ -99,12 +144,25 @@ class CryptoEngine:
             sigs = [s for s in [bounce_sig, long_sig] if s is not None]
             if sigs:
                 best = max(sigs, key=lambda s: s.score)
+                # Boost score with on-chain composite
+                best.score = round(best.score + on_chain_score)
                 candidates.append(best)
-                log.info(f"  {symbol}: {best.direction} score={best.score}")
+                log.info(f"  {symbol}: {best.direction} score={best.score} (on-chain adj)")
             else:
                 log.info(f"  {symbol}: no signal")
 
         candidates.sort(key=lambda s: s.score, reverse=True)
+
+        # ── Fear & Greed sizing multiplier ─────────────────────────────────
+        fg_value = fg.get("value", 50)
+        if fg_value <= 25:
+            fg_size_mult = 1.25   # Extreme Fear: size up 25%
+        elif fg_value >= 75:
+            fg_size_mult = 0.5    # Extreme Greed: size down 50%
+        elif btc_chg <= -5.0:
+            fg_size_mult = 0.25   # BTC down 5%+ intraday: size down 75%
+        else:
+            fg_size_mult = 1.0
 
         active = len(crypto_positions)
         for signal in candidates:
@@ -124,6 +182,9 @@ class CryptoEngine:
             last_row = indic.iloc[-1].to_dict() if hasattr(indic, "iloc") and len(indic) else {}
             regime = classify_regime(indic)
 
+            # Get per-symbol on-chain context (funding rate differs per symbol)
+            sym_ctx = get_market_context(signal.symbol)
+
             ai = analyse_crypto_signal(
                 symbol=signal.symbol,
                 regime=regime,
@@ -138,6 +199,7 @@ class CryptoEngine:
                 pullback_10d_pct=float(last_row.get("pullback_10d_pct", 0) or 0),
                 notes=signal.notes,
                 direction=signal.direction,
+                on_chain_context=sym_ctx,
             )
 
             log.info(f"  {signal.symbol}: AI conf={ai['confidence']} action={ai['action']} [{signal.direction}] — {ai['reason']}")
@@ -157,6 +219,11 @@ class CryptoEngine:
             elif ai["confidence"] >= 8 and regime == "active":
                 risk_pct = min(risk_pct * 1.25, 2.0)
 
+            # Apply Fear & Greed sizing multiplier
+            risk_pct = risk_pct * fg_size_mult
+            if fg_size_mult != 1.0:
+                log.info(f"  {signal.symbol}: F&G size mult={fg_size_mult:.2f} (F&G={fg_value})")
+
             plan = self.risk.shares_for_trade(price, atr, equity, stop, tp, risk_pct_override=risk_pct)
 
             if budget_remaining < float("inf"):
@@ -169,7 +236,7 @@ class CryptoEngine:
 
             log.info(f"  CRYPTO ENTRY [{signal.direction.upper()}] {signal.symbol}: "
                      f"qty={plan.qty:.6f} price=${price:.2f} stop=${stop:.2f} tp=${tp:.2f} "
-                     f"regime={regime} score={signal.score}")
+                     f"regime={regime} score={signal.score} AI={ai['confidence']}")
 
             if not self.dry_run:
                 try:

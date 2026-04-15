@@ -157,6 +157,7 @@ def analyse_crypto_signal(
     pullback_10d_pct: float,
     notes: list,
     direction: str = "long",
+    on_chain_context: Optional[dict] = None,
 ) -> dict:
     """
     Ask Claude to validate a crypto trading signal.
@@ -176,7 +177,37 @@ def analyse_crypto_signal(
         "bounce": "BOUNCE (counter-trend long): RSI extremely oversold <22, expecting violent snap-back. RISKY — needs strong conviction.",
     }.get(direction, "LONG")
 
-    prompt = f"""You are a quantitative crypto trading analyst reviewing a signal for Special K Trading.
+    # Build on-chain context section
+    ctx = on_chain_context or {}
+    fg   = ctx.get("fear_greed", {})
+    dom  = ctx.get("btc_dominance", {})
+    fund = ctx.get("funding", {})
+    news = ctx.get("news", {})
+    btc_chg = ctx.get("btc_1h_change", 0.0)
+    on_chain_score = ctx.get("total_on_chain_score", 0.0)
+
+    on_chain_lines = []
+    if fg.get("available"):
+        on_chain_lines.append(f"Fear & Greed Index: {fg['value']}/100 ({fg['label']}) → score delta {fg['score_delta']:+.1f}")
+    if dom.get("available"):
+        direction_str = "RISING (flight to BTC, bad for alts)" if dom.get("rising") else "FALLING (altcoin season risk-on)" if dom.get("rising") is False else "direction unknown"
+        on_chain_lines.append(f"BTC Dominance: {dom['pct']:.1f}% — {direction_str} → score delta {dom['score_delta']:+.1f}")
+    if fund.get("available"):
+        rate_pct = fund['rate'] * 100
+        on_chain_lines.append(f"Funding Rate: {rate_pct:.4f}% ({'negative=oversold' if fund['rate'] < 0 else 'positive=longs paying'}) → score delta {fund['score_delta']:+.1f}")
+    if btc_chg != 0.0:
+        on_chain_lines.append(f"BTC 1H change: {btc_chg:+.2f}%")
+    if news.get("available"):
+        on_chain_lines.append(f"Crypto news: {news['bullish_count']} bullish / {news['bearish_count']} bearish headlines → score delta {news['score_delta']:+.1f}")
+        if news.get("headlines"):
+            on_chain_lines.append(f"Top headlines: {'; '.join(news['headlines'][:3])}")
+
+    on_chain_section = ""
+    if on_chain_lines:
+        on_chain_section = "\n\nOn-Chain & Market Intelligence:\n" + "\n".join(f"  {l}" for l in on_chain_lines)
+        on_chain_section += f"\n  Composite on-chain score: {on_chain_score:+.2f}"
+
+    prompt = f"""You are a quantitative crypto trading analyst using the Special K v2.0 strategy framework.
 
 Asset: {symbol}
 Trade type: {direction_context}
@@ -188,13 +219,15 @@ ATR(14): {atr:.4f} ({atr/price*100:.2f}% of price — crypto volatility)
 MACD histogram: {macd_hist:.5f} ({'positive' if macd_hist > 0 else 'negative'})
 10-day move: {pullback_10d_pct:.2f}%
 Quant signal score: {score}/10
-Signal notes: {', '.join(notes)}
+Signal notes: {', '.join(notes)}{on_chain_section}
 
-Crypto-specific context to consider:
-- Crypto trades 24/7 — no market hours risk
-- Higher ATR% is normal (BTC 2-4%, altcoins 4-10%)
-- Momentum and trend continuation are key drivers
-- Altcoins (SOL, AVAX, LINK etc.) carry higher volatility risk than BTC/ETH
+Key rules:
+- Only take longs when price is above 50 EMA daily (trend alignment)
+- Fear & Greed < 25 = Extreme Fear is a BUY signal; > 75 = avoid longs
+- Rising BTC dominance = favor BTC/ETH only, skip alts
+- Negative funding rate = oversold bounce opportunity
+- Bearish news (SEC lawsuit, hack, ban) = hard skip regardless of technicals
+- Altcoins require extra caution vs BTC/ETH (2.5x volatility)
 
 Should we enter this {direction.upper()} trade?
 
@@ -202,9 +235,9 @@ Respond in exactly this JSON format (no other text):
 {{"confidence": <1-10>, "action": "<enter|skip|reduce>", "reason": "<one sentence max 15 words>"}}
 
 Rules:
-- confidence 8-10: strong setup, clear trend + pullback alignment
+- confidence 8-10: strong setup with on-chain confirmation
 - confidence 5-7: decent setup, proceed with normal sizing
-- confidence 1-4: weak or risky setup, skip
+- confidence 1-4: weak, risky, or bearish news environment — skip
 - action "reduce": enter but use half normal size
 - Be direct and data-driven. No hedging."""
 
