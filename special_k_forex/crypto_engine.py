@@ -12,6 +12,7 @@ from .crypto_data import CryptoDataClient, CRYPTO_SYMBOLS
 from .indicators import compute_indicators, classify_regime
 from .risk import RiskManager
 from .strategy import ForexETFStrategy as TrendPullbackStrategy
+from .ai_analyst import analyse_crypto_signal
 
 log = logging.getLogger(__name__)
 
@@ -117,7 +118,45 @@ class CryptoEngine:
             stop  = signal.stop_price
             tp    = signal.take_profit_price
 
+            # Recompute indicators for the AI call
+            bars = self.fetcher.get_daily_bars(signal.symbol)
+            indic = compute_indicators(bars) if bars is not None else {}
+            last_row = indic.iloc[-1].to_dict() if hasattr(indic, "iloc") and len(indic) else {}
+            regime = classify_regime(indic)
+
+            ai = analyse_crypto_signal(
+                symbol=signal.symbol,
+                regime=regime,
+                score=signal.score,
+                rsi=float(last_row.get("rsi", 50) or 50),
+                adx=float(last_row.get("adx", 20) or 20),
+                atr=atr,
+                price=price,
+                sma50=float(last_row.get("sma50", price) or price),
+                sma200=float(last_row.get("sma200", price) or price),
+                macd_hist=float(last_row.get("macd_hist", 0) or 0),
+                pullback_10d_pct=float(last_row.get("pullback_10d_pct", 0) or 0),
+                notes=signal.notes,
+                direction=signal.direction,
+            )
+
+            log.info(f"  {signal.symbol}: AI conf={ai['confidence']} action={ai['action']} [{signal.direction}] — {ai['reason']}")
+
+            if ai["confidence"] <= 4:
+                log.info(f"  {signal.symbol}: AI hard reject (conf≤4) — skipping.")
+                continue
+
             risk_pct = 0.3 if signal.direction == "bounce" else self.config.risk_per_trade_pct
+
+            if ai["action"] == "skip" or ai["confidence"] <= 5:
+                risk_pct *= 0.25
+                log.info(f"  {signal.symbol}: AI low conf — quarter size.")
+            elif ai["action"] == "reduce" or ai["confidence"] <= 6:
+                risk_pct *= 0.5
+                log.info(f"  {signal.symbol}: AI reduce — halving size.")
+            elif ai["confidence"] >= 8 and regime == "active":
+                risk_pct = min(risk_pct * 1.25, 2.0)
+
             plan = self.risk.shares_for_trade(price, atr, equity, stop, tp, risk_pct_override=risk_pct)
 
             if budget_remaining < float("inf"):
@@ -128,7 +167,6 @@ class CryptoEngine:
                 log.info(f"  {signal.symbol}: qty too small — skipping")
                 continue
 
-            regime = classify_regime(compute_indicators(self.fetcher.get_daily_bars(signal.symbol) or bars))
             log.info(f"  CRYPTO ENTRY [{signal.direction.upper()}] {signal.symbol}: "
                      f"qty={plan.qty:.6f} price=${price:.2f} stop=${stop:.2f} tp=${tp:.2f} "
                      f"regime={regime} score={signal.score}")

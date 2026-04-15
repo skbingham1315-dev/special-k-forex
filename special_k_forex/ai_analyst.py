@@ -143,6 +143,90 @@ Rules:
         return {"confidence": 5, "action": "enter", "reason": f"AI error — proceeding at reduced confidence.", "raw": ""}
 
 
+def analyse_crypto_signal(
+    symbol: str,
+    regime: str,
+    score: int,
+    rsi: float,
+    adx: float,
+    atr: float,
+    price: float,
+    sma50: float,
+    sma200: float,
+    macd_hist: float,
+    pullback_10d_pct: float,
+    notes: list,
+    direction: str = "long",
+) -> dict:
+    """
+    Ask Claude to validate a crypto trading signal.
+    Same return shape as analyse_signal: confidence, action, reason, raw.
+    """
+    client = _get_client()
+    if client is None:
+        return {"confidence": 5, "action": "enter", "reason": "AI analysis unavailable — proceeding at reduced confidence.", "raw": ""}
+
+    trend_desc = "above both SMA50 and SMA200 (uptrend)" if price > sma50 > sma200 else \
+                 "above SMA50 but below SMA200 (partial trend)" if price > sma50 else \
+                 "below SMA50 (downtrend)"
+
+    direction_context = {
+        "long":   "LONG (trend-pullback buy): price in uptrend, RSI dipped 30-50, expecting bounce higher.",
+        "short":  "SHORT (trend-continuation sell): price in downtrend, RSI bounced to 52-75, expecting resumption lower.",
+        "bounce": "BOUNCE (counter-trend long): RSI extremely oversold <22, expecting violent snap-back. RISKY — needs strong conviction.",
+    }.get(direction, "LONG")
+
+    prompt = f"""You are a quantitative crypto trading analyst reviewing a signal for Special K Trading.
+
+Asset: {symbol}
+Trade type: {direction_context}
+Current price: ${price:.4f}
+Market regime: {regime.upper()} (ADX={adx:.1f})
+Trend: {trend_desc} — SMA50=${sma50:.4f}, SMA200=${sma200:.4f}
+RSI(14): {rsi:.1f}
+ATR(14): {atr:.4f} ({atr/price*100:.2f}% of price — crypto volatility)
+MACD histogram: {macd_hist:.5f} ({'positive' if macd_hist > 0 else 'negative'})
+10-day move: {pullback_10d_pct:.2f}%
+Quant signal score: {score}/10
+Signal notes: {', '.join(notes)}
+
+Crypto-specific context to consider:
+- Crypto trades 24/7 — no market hours risk
+- Higher ATR% is normal (BTC 2-4%, altcoins 4-10%)
+- Momentum and trend continuation are key drivers
+- Altcoins (SOL, AVAX, LINK etc.) carry higher volatility risk than BTC/ETH
+
+Should we enter this {direction.upper()} trade?
+
+Respond in exactly this JSON format (no other text):
+{{"confidence": <1-10>, "action": "<enter|skip|reduce>", "reason": "<one sentence max 15 words>"}}
+
+Rules:
+- confidence 8-10: strong setup, clear trend + pullback alignment
+- confidence 5-7: decent setup, proceed with normal sizing
+- confidence 1-4: weak or risky setup, skip
+- action "reduce": enter but use half normal size
+- Be direct and data-driven. No hedging."""
+
+    try:
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = msg.content[0].text.strip()
+        import json
+        data = json.loads(raw)
+        confidence = int(data.get("confidence", 7))
+        action = data.get("action", "enter")
+        reason = data.get("reason", "No reason provided.")
+        log.info(f"AI [{symbol}]: confidence={confidence} action={action} | {reason}")
+        return {"confidence": confidence, "action": action, "reason": reason, "raw": raw}
+    except Exception as e:
+        log.warning(f"AI crypto analysis failed for {symbol}: {e}")
+        return {"confidence": 5, "action": "enter", "reason": f"AI error — proceeding at reduced confidence.", "raw": ""}
+
+
 def analyse_market_overview(symbols_data: list) -> str:
     """
     Ask Claude for a brief macro take on the current forex ETF landscape.
@@ -178,4 +262,42 @@ Be specific about which currencies look strongest/weakest. Plain text only, no m
         return msg.content[0].text.strip()
     except Exception as e:
         log.warning(f"Market overview AI failed: {e}")
+        return ""
+
+
+def analyse_crypto_market_overview(symbols_data: list) -> str:
+    """
+    Ask Claude for a brief macro take on the current crypto landscape.
+    Used for the dashboard overview panel.
+    Returns a 2-3 sentence market summary string.
+    """
+    client = _get_client()
+    if client is None:
+        return ""
+
+    lines = []
+    for s in symbols_data:
+        lines.append(
+            f"  {s['symbol']}: price={s.get('last_close','?')}, "
+            f"RSI={s.get('rsi','?')}, ADX={s.get('adx','?')}, "
+            f"regime={s.get('regime','normal')}, trend={'UP' if s.get('trend_up') else 'DOWN'}"
+        )
+    summary = "\n".join(lines)
+
+    prompt = f"""You are a crypto market analyst. Here is the current state of these crypto assets:
+
+{summary}
+
+Give a 2-sentence macro summary of what this data tells us about the crypto market right now.
+Be specific about which assets look strongest/weakest and whether BTC is leading. Plain text only, no markdown."""
+
+    try:
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=120,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return msg.content[0].text.strip()
+    except Exception as e:
+        log.warning(f"Crypto market overview AI failed: {e}")
         return ""
