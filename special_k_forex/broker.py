@@ -77,6 +77,40 @@ class Broker:
         req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=limit)
         return self.client.get_orders(filter=req)
 
+    def get_pdt_info(self) -> dict:
+        """
+        Return PDT status for the account.
+        daytrade_count: how many day trades used in the rolling 5-day window
+        pdt_flagged: True if the account is officially flagged as a PDT account
+        near_limit: True if count >= 3 and not flagged (next close of same-day open = PDT violation)
+        """
+        try:
+            acct = self.client.get_account()
+            count = int(getattr(acct, "daytrade_count", 0) or 0)
+            flagged = bool(getattr(acct, "pattern_day_trader", False))
+            return {"daytrade_count": count, "pdt_flagged": flagged, "near_limit": count >= 3 and not flagged}
+        except Exception:
+            return {"daytrade_count": 0, "pdt_flagged": False, "near_limit": False}
+
+    def get_todays_opened_symbols(self) -> set:
+        """
+        Return set of symbols that had a filled BUY order placed today (local date).
+        Used to identify same-day positions that would trigger PDT if closed today.
+        """
+        from datetime import date, datetime, timezone
+        today_utc = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=timezone.utc)
+        try:
+            req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, after=today_utc, limit=200)
+            orders = self.client.get_orders(filter=req)
+            return {
+                o.symbol for o in orders
+                if str(getattr(o.side, "value", o.side)).lower() == "buy"
+                and getattr(o, "filled_at", None) is not None
+            }
+        except Exception as e:
+            logger.debug(f"get_todays_opened_symbols failed: {e}")
+            return set()
+
     def place_bracket_buy(
         self,
         symbol: str,

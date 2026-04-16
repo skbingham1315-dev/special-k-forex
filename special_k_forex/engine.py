@@ -69,6 +69,18 @@ class ForexEngine:
 
         # ── EXIT PASS ──────────────────────────────────────────────────────────
         positions = {p.symbol: p for p in self.broker.get_positions()}
+
+        # PDT guard: if account is near/at the 3 day-trade limit, identify which
+        # positions were opened today so we can skip closing them (would be a day trade).
+        pdt = self.broker.get_pdt_info()
+        todays_opens: set = set()
+        if pdt["near_limit"] and not self.dry_run:
+            todays_opens = self.broker.get_todays_opened_symbols()
+            logger.warning(
+                f"PDT limit reached ({pdt['daytrade_count']}/3 day trades used) — "
+                f"skipping same-day exits for: {todays_opens or 'none'}"
+            )
+
         for symbol, pos in list(positions.items()):
             bars = self.fetcher.get_daily_bars(symbol)
             if bars is None or len(bars) < 60:
@@ -78,6 +90,10 @@ class ForexEngine:
                 bars, side=side
             )
             if should_exit:
+                # Skip closing if position was opened today and we're at PDT limit
+                if pdt["near_limit"] and symbol in todays_opens:
+                    logger.info(f"  HOLD {symbol} [{side}]: exit condition met ({exit_reason}) but opened today — PDT protected, closing tomorrow.")
+                    continue
                 logger.info(f"EXIT {symbol} [{side}]: {exit_reason}")
                 if not self.dry_run:
                     try:
