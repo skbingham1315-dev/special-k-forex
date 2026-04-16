@@ -30,14 +30,13 @@ def _env_list(name: str, default: List[str]) -> List[str]:
     return [item.strip().upper() for item in raw.split(",") if item.strip()]
 
 
-# Default forex ETF watchlist:
-#   FXE  = Euro (EUR/USD proxy)
-#   FXB  = British Pound (GBP/USD proxy)
-#   FXY  = Japanese Yen (USD/JPY inverse proxy)
-#   FXC  = Canadian Dollar (USD/CAD inverse proxy)
-#   FXA  = Australian Dollar (AUD/USD proxy)
-#   UUP  = US Dollar Index bullish
-_DEFAULT_SYMBOLS = ["FXE", "FXB", "FXY", "FXC", "FXA", "UUP"]
+# Default watchlist — forex ETFs + crypto
+#   Forex ETFs: FXE/FXB/FXY/FXC/FXA = major currency pairs, UUP = USD index
+#   Crypto: BTC/USD, ETH/USD, SOL/USD, DOGE/USD — 24/7, no PDT, high volatility
+_DEFAULT_SYMBOLS = [
+    "FXE", "FXB", "FXY", "FXC", "FXA", "UUP",
+    "BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD",
+]
 
 
 @dataclass(slots=True)

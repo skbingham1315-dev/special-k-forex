@@ -14,6 +14,7 @@ from alpaca.trading.requests import (
 )
 
 from .config import settings
+from .data import is_crypto, normalise_crypto
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,14 @@ class Broker:
             secret_key=settings.alpaca_secret_key,
             paper=settings.alpaca_paper,
         )
+        # Detect whether the account supports shorting (paper accounts often don't)
+        try:
+            acct = self.client.get_account()
+            self.shorting_enabled: bool = getattr(acct, "shorting_enabled", True)
+        except Exception:
+            self.shorting_enabled = False
+        if not self.shorting_enabled:
+            logger.info("Broker: shorting_enabled=False — short/sell signals will be skipped.")
 
     def get_account(self):
         return self.client.get_account()
@@ -78,6 +87,21 @@ class Broker:
     ):
         if qty < 0.001:
             raise ValueError("Quantity must be at least 0.001.")
+
+        # Crypto: use GTC limit order (no bracket, no DAY TIF, fractional fine)
+        if is_crypto(symbol):
+            sym = normalise_crypto(symbol)
+            limit_price = round(max(quote_ask, 0.01) * 1.003, 2)
+            logger.info(f"CRYPTO BUY {sym}: qty={qty} limit={limit_price}")
+            request = LimitOrderRequest(
+                symbol=sym,
+                qty=qty,
+                side=OrderSide.BUY,
+                limit_price=limit_price,
+                time_in_force=TimeInForce.GTC,
+            )
+            return self.client.submit_order(request)
+
         limit_price = round(max(quote_ask, 0.01) * 1.003, 4)  # 0.3% above — fills at open reliably
 
         # Alpaca does not allow bracket orders for fractional shares — use simple limit

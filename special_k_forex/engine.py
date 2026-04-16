@@ -80,7 +80,14 @@ class ForexEngine:
             if should_exit:
                 logger.info(f"EXIT {symbol} [{side}]: {exit_reason}")
                 if not self.dry_run:
-                    self.broker.close_position(symbol)
+                    try:
+                        self.broker.close_position(symbol)
+                    except Exception as exc:
+                        err = str(exc)
+                        if "pattern day trading" in err.lower() or "40310100" in err:
+                            logger.warning(f"  EXIT {symbol} blocked by PDT rule — will close tomorrow.")
+                        else:
+                            logger.error(f"  EXIT {symbol} failed: {exc}")
 
         # ── HEDGE PASS ─────────────────────────────────────────────────────────
         positions = {p.symbol: p for p in self.broker.get_positions()}
@@ -142,7 +149,7 @@ class ForexEngine:
 
             # Try long → short → bounce, take best score
             long_sig   = self.strategy.evaluate(symbol, bars)
-            short_sig  = self.strategy.evaluate_short(symbol, bars)
+            short_sig  = self.strategy.evaluate_short(symbol, bars) if self.broker.shorting_enabled else None
             bounce_sig = self.strategy.evaluate_bounce(symbol, bars)
 
             # Collect all valid signals, sorted by score
@@ -200,7 +207,8 @@ class ForexEngine:
                 logger.info(f"  {symbol}: political WARNING — {pol['summary']}")
 
             # ── AI validation ───────────────────────────────────────────────
-            last_df  = compute_indicators(self.fetcher.get_daily_bars(symbol) or bars)
+            _fresh = self.fetcher.get_daily_bars(symbol)
+            last_df  = compute_indicators(_fresh if (_fresh is not None and not _fresh.empty) else bars)
             last_row = last_df.iloc[-1]
 
             # Pull trend memory if available — gives Claude context beyond current bar
@@ -284,7 +292,8 @@ class ForexEngine:
             # Short/bounce signals skip the market-uptrend gate since they trade
             # in downtrends by design. Apply the full legendary filter to longs only.
             if signal.direction == "long":
-                _bars      = self.fetcher.get_daily_bars(symbol) or bars
+                _b = self.fetcher.get_daily_bars(symbol)
+                _bars = _b if (_b is not None and not _b.empty) else bars
                 _prices    = _bars["close"].tolist()
                 _volumes   = _bars["volume"].tolist()
                 _sma150    = float(last_row.get("sma150", last_row.get("sma50", price)) or price)
@@ -324,6 +333,13 @@ class ForexEngine:
                     budget_remaining -= plan.max_notional
                     active_positions += 1
                 except Exception as exc:
-                    logger.error(f"  Order failed for {symbol}: {exc}")
+                    err = str(exc)
+                    if "pattern day trading" in err.lower() or "40310100" in err:
+                        logger.warning(f"  {symbol}: blocked by PDT rule — skipping (max 3 day trades/5 days under $25K).")
+                        break  # PDT hit — stop trying to enter more trades today
+                    elif "not allowed to short" in err.lower() or "40310000" in err:
+                        logger.warning(f"  {symbol}: account does not support shorting — skipping short.")
+                    else:
+                        logger.error(f"  Order failed for {symbol}: {exc}")
             else:
                 active_positions += 1

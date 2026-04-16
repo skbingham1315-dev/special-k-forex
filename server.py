@@ -215,7 +215,7 @@ def scheduler_loop():
                 cfg = Settings()
                 if TRADE_BUDGET["value"] > 0:
                     cfg.trade_budget = TRADE_BUDGET["value"]
-                if _now.minute % 30 == 0:  # every 30 min
+                if _now.minute % 15 == 0:  # every 15 min, 24/7
                     CryptoEngine(cfg, dry_run=not LIVE_MODE["value"]).run()
             except Exception as _ce:
                 log.error(f"Crypto engine error: {_ce}")
@@ -224,7 +224,6 @@ def scheduler_loop():
 
 threading.Thread(target=scheduler_loop, daemon=True).start()
 threading.Thread(target=_trend_memory_daily_loop, daemon=True).start()
-threading.Thread(target=_run_scan_background, daemon=True).start()   # pre-warm scan cache on startup
 log.info("Forex scheduler started - runs every 5 min during market hours")
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -401,6 +400,7 @@ def _run_scan_background():
         from special_k_forex.trend_memory import get_symbol_memory
         from special_k_forex.legendary_trader_rules import score_trade_signal as _lt_score
         import pandas as _pd
+        import time as _time
         client = MarketDataClient(); strat = ForexETFStrategy(); results = []
         def _safe(val, rnd=4):
             try: return round(float(val), rnd) if not _pd.isna(val) else None
@@ -490,6 +490,10 @@ def _run_scan_background():
         log.info(f"Background scan complete: {len(results)} symbols")
     except Exception as e:
         log.error(f"Background scan error: {e}")
+
+
+# Pre-warm scan cache on startup (defined after the function)
+threading.Thread(target=_run_scan_background, daemon=True).start()
 
 
 @app.route("/api/scan")
@@ -855,6 +859,82 @@ def api_crypto_scan():
     except Exception as e:
         return jsonify({"crypto": [], "error": str(e)})
 
+@app.route("/api/crypto_chart")
+@login_required
+def api_crypto_chart():
+    """Price history + trade markers + P&L for crypto chart tab."""
+    sym = request.args.get("symbol", "BTC/USD")
+    try:
+        from special_k_forex.data import MarketDataClient, is_crypto, normalise_crypto
+        from special_k_forex.indicators import compute_indicators
+        fetcher = MarketDataClient()
+        bars = fetcher.get_daily_bars(sym, days=180)
+        price_labels, price_data, entry_points, exit_points = [], [], [], []
+        if bars is not None and not bars.empty:
+            df = compute_indicators(bars)
+            for _, row in df.tail(90).iterrows():
+                d = str(row.get("date", ""))[:10]
+                price_labels.append(d)
+                price_data.append(round(float(row["close"]), 4))
+
+        # Pull trade entries/exits for this symbol from trade log
+        trades = _alpaca_orders_as_trades()
+        sym_clean = sym.replace("/", "")
+        crypto_trades = [t for t in trades if t.get("symbol","").replace("/","") == sym_clean]
+        for t in crypto_trades:
+            d = str(t.get("entry_time","") or t.get("date",""))[:10]
+            if d and d in price_labels:
+                idx = price_labels.index(d)
+                if t.get("entry_price"):
+                    entry_points.append({"x": idx, "y": float(t["entry_price"]), "label": f"BUY {t.get('qty','')} @ ${t['entry_price']}"})
+                if t.get("exit_price") and t.get("status") == "closed":
+                    exit_d = str(t.get("exit_time",""))[:10]
+                    if exit_d and exit_d in price_labels:
+                        eidx = price_labels.index(exit_d)
+                        exit_points.append({"x": eidx, "y": float(t["exit_price"]), "label": f"SELL @ ${t['exit_price']} P&L:{t.get('pnl','?')}"})
+
+        # Crypto cumulative P&L
+        closed_crypto = [t for t in crypto_trades if t.get("status")=="closed" and t.get("pnl") is not None]
+        pnl_by_date = {}
+        for t in closed_crypto:
+            d = str(t.get("exit_time","") or t.get("date",""))[:10]
+            if d:
+                pnl_by_date[d] = pnl_by_date.get(d, 0.0) + float(t.get("pnl") or 0)
+        cum_pnl, running = [], 0.0
+        for d in sorted(pnl_by_date):
+            running += pnl_by_date[d]
+            cum_pnl.append({"date": d, "pnl": round(running, 4)})
+
+        wins = sum(1 for t in closed_crypto if float(t.get("pnl",0)) > 0)
+        losses = sum(1 for t in closed_crypto if float(t.get("pnl",0)) <= 0)
+
+        # Fear & Greed index
+        fg = {"value": 50, "classification": "Neutral"}
+        try:
+            import urllib.request as _ur, json as _j
+            with _ur.urlopen("https://api.alternative.me/fng/?limit=1", timeout=5) as _r:
+                _d = _j.loads(_r.read().decode())
+                if _d.get("data"):
+                    fg = {"value": int(_d["data"][0]["value"]), "classification": _d["data"][0]["value_classification"]}
+        except Exception:
+            pass
+
+        return jsonify({
+            "symbol": sym,
+            "price_labels": price_labels,
+            "price_data": price_data,
+            "entry_points": entry_points,
+            "exit_points": exit_points,
+            "cum_pnl": cum_pnl,
+            "wins": wins,
+            "losses": losses,
+            "trades": [{"time": t.get("entry_time","")[:16] if t.get("entry_time") else "", "symbol": t.get("symbol",""), "qty": t.get("qty",""), "entry": t.get("entry_price",""), "exit": t.get("exit_price",""), "pnl": t.get("pnl",""), "pnl_pct": t.get("pnl_pct",""), "status": t.get("status","")} for t in crypto_trades[-50:]],
+            "fear_greed": fg,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "price_labels": [], "price_data": [], "entry_points": [], "exit_points": [], "cum_pnl": [], "wins": 0, "losses": 0, "trades": [], "fear_greed": {"value": 50, "classification": "Neutral"}})
+
+
 @app.route("/api/markets")
 @login_required
 def api_markets():
@@ -1098,6 +1178,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <button onclick="showTab('positions',this)">Positions</button>
 <button onclick="showTab('performance',this)">Performance</button>
 <button onclick="showTab('research',this)">FX Research</button>
+<button onclick="showTab('crypto',this)">&#8383; Crypto</button>
 <button onclick="showTab('tradelog',this)">Trade Log</button>
 <button onclick="showTab('control',this)">Controls</button>
 </nav>
@@ -1248,6 +1329,52 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <div id="crypto-cards" class="g3 gap"></div>
 </div>
 
+<!-- CRYPTO -->
+<div id="page-crypto" class="page">
+<div class="ph">
+  <span class="pt" style="color:#f7931a">&#8383; Crypto Trading — 24/7</span>
+  <div style="display:flex;gap:8px;align-items:center">
+    <select id="crypto-sym-select" style="background:#0d1117;border:1px solid var(--border);color:var(--fg);font-family:var(--mono);font-size:11px;padding:4px 8px;border-radius:3px">
+      <option value="BTC/USD">BTC/USD</option>
+      <option value="ETH/USD">ETH/USD</option>
+      <option value="SOL/USD">SOL/USD</option>
+      <option value="DOGE/USD">DOGE/USD</option>
+    </select>
+    <button class="rb" onclick="loadCryptoChart()">Load Chart</button>
+    <button class="rb" onclick="loadCryptoTab()" style="background:rgba(247,147,26,.12);color:#f7931a;border-color:rgba(247,147,26,.3)">Refresh All</button>
+  </div>
+</div>
+
+<!-- Fear & Greed + Market Stats row -->
+<div id="crypto-stats-row" class="g3 gap" style="margin-bottom:16px"></div>
+
+<!-- Price chart with trade markers -->
+<div class="cp" style="margin-bottom:16px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <h3 id="crypto-chart-title" style="color:#f7931a">BTC/USD — Price Chart</h3>
+    <div style="font-family:var(--mono);font-size:10px;color:var(--dim)">&#9650; = Entry &nbsp; &#9660; = Exit</div>
+  </div>
+  <div style="position:relative;height:280px"><canvas id="cryptoPriceChart"></canvas></div>
+</div>
+
+<!-- Crypto P&L chart -->
+<div class="g2 gap" style="margin-bottom:16px">
+  <div class="cp"><h3>Crypto Cumulative P&L</h3><div style="position:relative;height:180px"><canvas id="cryptoPnlChart"></canvas></div></div>
+  <div class="cp"><h3>Crypto Win / Loss</h3><div style="position:relative;height:180px"><canvas id="cryptoWinLossChart"></canvas></div></div>
+</div>
+
+<!-- Live crypto cards -->
+<div class="ph" style="margin-top:4px"><span class="pt" style="font-size:12px">Live Signals</span></div>
+<div id="crypto-tab-cards" class="g3 gap" style="margin-bottom:16px"></div>
+
+<!-- Crypto trade log -->
+<div class="tw">
+<h3 style="padding:12px 14px 8px">Crypto Trades</h3>
+<table><thead><tr><th>Time</th><th>Symbol</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&L $</th><th>P&L %</th><th>Status</th></tr></thead>
+<tbody id="crypto-log-tbody"><tr><td colspan="8" style="text-align:center;color:var(--dim);padding:20px">Loading...</td></tr></tbody></table>
+</div>
+</div>
+
 <!-- TRADE LOG -->
 <div id="page-tradelog" class="page">
 <div class="ph"><span class="pt">Trade Log</span><button class="rb" onclick="loadTradeLog()">Refresh</button></div>
@@ -1379,7 +1506,7 @@ function showTab(id,btn){
   document.getElementById('page-'+id).classList.add('active');
   if(btn)btn.classList.add('active');
   setTimeout(()=>Object.values(CH).forEach(c=>{try{c.resize();}catch(e){}}),50);
-  ({overview:loadOverview,positions:loadPositions,performance:loadPerformance,research:()=>{loadResearch();loadCrypto();},tradelog:loadTradeLog,control:loadControl})[id]?.();
+  ({overview:loadOverview,positions:loadPositions,performance:loadPerformance,research:()=>{loadResearch();loadCrypto();},crypto:loadCryptoTab,tradelog:loadTradeLog,control:loadControl})[id]?.();
 }
 const f$=v=>v==null?'--':'$'+parseFloat(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const f4=v=>v==null?'--':parseFloat(v).toFixed(4);
@@ -1792,6 +1919,130 @@ async function loadCrypto(){
     }).join('');
   }catch(e){}
 }
+// ── Crypto Tab ────────────────────────────────────────────────────────────────
+async function loadCryptoChart(){
+  const sym = document.getElementById('crypto-sym-select')?.value || 'BTC/USD';
+  document.getElementById('crypto-chart-title').textContent = sym + ' — Price Chart (90 days)';
+  try {
+    const r = await fetch('/api/crypto_chart?symbol='+encodeURIComponent(sym));
+    const d = await r.json();
+    if(d.error){console.error('Crypto chart error:',d.error);return;}
+
+    // Price line chart with entry/exit scatter points
+    const priceDs = [{
+      label: sym, data: d.price_data,
+      borderColor:'#f7931a', backgroundColor:'rgba(247,147,26,.08)',
+      fill:true, tension:.2, pointRadius:0, borderWidth:1.5, order:2
+    }];
+    if(d.entry_points.length){
+      priceDs.push({label:'Entry', data: d.price_labels.map((_,i)=>{const p=d.entry_points.find(e=>e.x===i);return p?p.y:null;}),
+        type:'scatter', pointStyle:'triangle', pointRadius:10, pointBackgroundColor:'#00ff88',
+        pointBorderColor:'#00ff88', showLine:false, order:1});
+    }
+    if(d.exit_points.length){
+      priceDs.push({label:'Exit', data: d.price_labels.map((_,i)=>{const p=d.exit_points.find(e=>e.x===i);return p?p.y:null;}),
+        type:'scatter', pointStyle:'triangle', rotation:180, pointRadius:10, pointBackgroundColor:'#ff4466',
+        pointBorderColor:'#ff4466', showLine:false, order:1});
+    }
+    mk('cryptoPriceChart',{type:'line',data:{labels:d.price_labels,datasets:priceDs},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:d.entry_points.length>0||d.exit_points.length>0,labels:{color:'#4a6278',boxWidth:10,font:{size:10}}}},scales:{x:{grid:{color:'#0f1a24'},ticks:{color:'#4a6278',maxTicksLimit:12}},y:{grid:{color:'#0f1a24'},ticks:{color:'#4a6278'}}}}});
+
+    // Cumulative P&L chart
+    const cpnl = d.cum_pnl || [];
+    if(cpnl.length){
+      const lastVal = cpnl[cpnl.length-1]?.pnl || 0;
+      const pnlColor = lastVal >= 0 ? '#00ff88' : '#ff4466';
+      mk('cryptoPnlChart', cc('line', cpnl.map(e=>e.date.slice(5)), [{data:cpnl.map(e=>e.pnl), borderColor:pnlColor, backgroundColor:lastVal>=0?'rgba(0,255,136,.08)':'rgba(255,68,102,.08)', fill:true, tension:.3, pointRadius:cpnl.length<=20?3:1, borderWidth:1.5}]));
+    } else {
+      const el=document.getElementById('cryptoPnlChart');if(el){const ctx=el.getContext('2d');ctx.font='11px monospace';ctx.fillStyle='#4a6278';ctx.textAlign='center';ctx.fillText('No closed crypto trades yet',el.width/2,el.height/2);}
+    }
+
+    // Win/Loss donut
+    if(d.wins+d.losses>0){
+      mk('cryptoWinLossChart',{type:'doughnut',data:{labels:['Wins','Losses'],datasets:[{data:[d.wins,d.losses],backgroundColor:['rgba(0,255,136,.7)','rgba(255,68,102,.7)'],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,labels:{color:'#4a6278',boxWidth:10,font:{size:10}}}}}});
+    }
+
+    // Crypto trade log
+    const tbody=document.getElementById('crypto-log-tbody');
+    if(tbody){
+      tbody.innerHTML = d.trades.length ? d.trades.slice().reverse().map(t=>{
+        const pc=parseFloat(t.pnl||0)>=0?'var(--green)':'var(--red)';
+        return `<tr><td>${(t.time||'').slice(5,16)}</td><td style="color:#f7931a">${t.symbol}</td><td>${t.qty}</td><td>${t.entry?'$'+parseFloat(t.entry).toFixed(4):'--'}</td><td>${t.exit?'$'+parseFloat(t.exit).toFixed(4):'--'}</td><td style="color:${pc}">${t.pnl!=null?'$'+parseFloat(t.pnl).toFixed(4):'--'}</td><td style="color:${pc}">${t.pnl_pct!=null?(t.pnl_pct>=0?'+':'')+parseFloat(t.pnl_pct).toFixed(2)+'%':'--'}</td><td>${t.status||''}</td></tr>`;
+      }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--dim);padding:20px">No crypto trades yet — bot is scanning 24/7</td></tr>';
+    }
+  } catch(e){console.error('loadCryptoChart',e);}
+}
+
+async function loadCryptoTab(){
+  // Load stats row: Fear & Greed + crypto cards
+  try {
+    const r = await fetch('/api/crypto_chart?symbol=BTC%2FUSD');
+    const d = await r.json();
+    const fg = d.fear_greed || {value:50, classification:'Neutral'};
+    const fgColor = fg.value<=25?'#ff4466':fg.value<=45?'#ffb400':fg.value<=55?'#4a6278':fg.value<=75?'#00cfff':'#00ff88';
+    const statsEl = document.getElementById('crypto-stats-row');
+    if(statsEl){
+      statsEl.innerHTML = `
+        <div class="cp" style="text-align:center">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:1px;margin-bottom:6px">FEAR & GREED INDEX</div>
+          <div style="font-size:48px;font-weight:bold;color:${fgColor};line-height:1">${fg.value}</div>
+          <div style="font-family:var(--mono);font-size:13px;color:${fgColor};margin-top:4px">${fg.classification.toUpperCase()}</div>
+          <div style="margin-top:10px;background:#0d1a26;border-radius:4px;height:8px;overflow:hidden">
+            <div style="height:100%;width:${fg.value}%;background:linear-gradient(90deg,#ff4466,#ffb400,#00ff88);border-radius:4px"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:9px;color:var(--dim);margin-top:2px"><span>FEAR</span><span>GREED</span></div>
+        </div>
+        <div class="cp">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:1px;margin-bottom:8px">CRYPTO ENGINE</div>
+          <div style="font-family:var(--mono);font-size:12px;color:var(--fg);line-height:2">
+            <div>&#9679; Runs every <span style="color:#f7931a">15 min</span> 24/7</div>
+            <div>&#9679; Scanning <span style="color:#f7931a">BTC · ETH · SOL · DOGE</span></div>
+            <div>&#9679; Strategy: Long + Bounce signals</div>
+            <div>&#9679; No PDT restrictions on crypto</div>
+          </div>
+        </div>
+        <div class="cp">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:1px;margin-bottom:8px">SIGNAL GUIDE</div>
+          <div style="font-family:var(--mono);font-size:11px;line-height:2">
+            <div><span style="color:#00ff88">▲ LONG</span> — RSI pullback in uptrend</div>
+            <div><span style="color:#f7931a">▲ BOUNCE</span> — RSI &lt; 22, extreme oversold</div>
+            <div style="color:var(--dim);font-size:10px;margin-top:4px">Fear &amp; Greed &lt; 25 = buy opportunity</div>
+            <div style="color:var(--dim);font-size:10px">Fear &amp; Greed &gt; 75 = reduce exposure</div>
+          </div>
+        </div>`;
+    }
+  } catch(e){}
+
+  // Load live signal cards
+  try {
+    const r2 = await fetch('/api/crypto'); const d2 = await r2.json();
+    const el = document.getElementById('crypto-tab-cards');
+    if(el && d2.crypto){
+      if(!d2.crypto.length){el.innerHTML='<div style="color:var(--dim);font-family:var(--mono);padding:16px">Scanning... no signals yet.</div>';return;}
+      el.innerHTML = d2.crypto.map(c=>{
+        const sigCol=c.signal?'#f7931a':'var(--dim)';
+        const rsiCol=c.rsi<25?'var(--red)':c.rsi<40?'#ffb400':'var(--green)';
+        const chgCol=c.change_pct>=0?'var(--green)':'var(--red)';
+        return `<div class="cp" style="cursor:pointer" onclick="document.getElementById('crypto-sym-select').value='${c.symbol}';loadCryptoChart()">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-family:var(--mono);font-size:14px;color:#f7931a;font-weight:bold">${c.symbol}</span>
+            <span style="font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:3px;background:rgba(247,147,26,.15);color:${sigCol}">${c.signal?c.signal.toUpperCase()+' '+c.score:'WATCHING'}</span>
+          </div>
+          <div style="font-size:20px;font-weight:bold;margin-bottom:6px">$${c.price.toLocaleString()}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-family:var(--mono);font-size:11px">
+            <div><div style="color:var(--dim)">RSI</div><div style="color:${rsiCol}">${c.rsi}</div></div>
+            <div><div style="color:var(--dim)">ADX</div><div>${c.adx}</div></div>
+            <div><div style="color:var(--dim)">10D</div><div style="color:${chgCol}">${c.change_pct>=0?'+':''}${c.change_pct}%</div></div>
+          </div>
+          <div style="font-family:var(--mono);font-size:9px;color:var(--dim);margin-top:6px">Click to view chart</div>
+        </div>`;
+      }).join('');
+    }
+  } catch(e){}
+
+  // Auto-load BTC chart
+  loadCryptoChart();
+}
+
 // ── Market Clock ──────────────────────────────────────────────────────────────
 async function loadMarketClock(){
   try{
