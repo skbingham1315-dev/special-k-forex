@@ -197,6 +197,7 @@ def scheduler_loop():
     import time
     import pytz as _pytz
     import datetime as _dtt
+    _last_crypto_run = 0.0  # track elapsed time instead of clock minute
     while True:
         try:
             from special_k_forex.market_hours import is_us_regular, is_us_extended
@@ -206,17 +207,18 @@ def scheduler_loop():
                 _now = _dtt.datetime.now(_pytz.timezone("America/New_York"))
                 if _now.minute % 15 == 0:
                     run_engine()
-            # Crypto runs 24/7 regardless of market hours
+            # Crypto runs 24/7 regardless of market hours — use elapsed time
+            # so it always fires every ~15 min regardless of when Railway started.
             try:
-                import datetime as _dt
-                _now = _dt.datetime.now()
+                import time as _time
                 from special_k_forex.crypto_engine import CryptoEngine
                 from special_k_forex.config import Settings
-                cfg = Settings()
-                if TRADE_BUDGET["value"] > 0:
-                    cfg.trade_budget = TRADE_BUDGET["value"]
-                if _now.minute % 15 == 0:  # every 15 min, 24/7
+                if _time.monotonic() - _last_crypto_run >= 900:  # 15 min
+                    cfg = Settings()
+                    if TRADE_BUDGET["value"] > 0:
+                        cfg.trade_budget = TRADE_BUDGET["value"]
                     CryptoEngine(cfg, dry_run=not LIVE_MODE["value"]).run()
+                    _last_crypto_run = _time.monotonic()
             except Exception as _ce:
                 log.error(f"Crypto engine error: {_ce}")
         except Exception as e: log.error(f"Scheduler error: {e}")
