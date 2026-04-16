@@ -312,6 +312,17 @@ def api_account():
         b = get_broker(); a = b.get_account()
         pos = b.get_positions(); orders = b.get_open_orders()
         up = sum(float(p.unrealized_pl or 0) for p in pos)
+
+        def _is_crypto_sym(sym: str) -> bool:
+            s = sym.upper()
+            # Crypto Alpaca symbols: BTCUSD, ETHUSD, SOLUSDT etc (6+ chars ending USD/USDT)
+            return (len(s) >= 6 and (s.endswith("USD") or s.endswith("USDT"))) or "/" in s
+
+        crypto_deployed = sum(abs(float(p.market_value or 0)) for p in pos if _is_crypto_sym(p.symbol))
+        stock_deployed  = sum(abs(float(p.market_value or 0)) for p in pos if not _is_crypto_sym(p.symbol))
+        crypto_pnl      = sum(float(p.unrealized_pl or 0) for p in pos if _is_crypto_sym(p.symbol))
+        stock_pnl       = sum(float(p.unrealized_pl or 0) for p in pos if not _is_crypto_sym(p.symbol))
+
         pos_list = [{
             "symbol": p.symbol,
             "pair": FOREX_PAIRS.get(p.symbol, p.symbol),
@@ -322,6 +333,7 @@ def api_account():
             "market_value":    float(p.market_value or 0),
             "unrealized_pl":   float(p.unrealized_pl or 0),
             "unrealized_plpc": float(p.unrealized_plpc or 0),
+            "is_crypto":       _is_crypto_sym(p.symbol),
         } for p in pos]
         ord_list = [{
             "id":          str(o.id),
@@ -339,6 +351,10 @@ def api_account():
                         "buying_power": float(a.buying_power or 0), "last_equity": float(a.last_equity or 0)},
             "unrealized_pnl": up, "position_count": len(pos), "order_count": len(orders),
             "positions": pos_list, "orders": ord_list,
+            "crypto_deployed": round(crypto_deployed, 2),
+            "stock_deployed":  round(stock_deployed, 2),
+            "crypto_pnl":      round(crypto_pnl, 2),
+            "stock_pnl":       round(stock_pnl, 2),
         })
     except Exception as e:
         log.error(f"/api/account error: {e}")
@@ -1206,6 +1222,8 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <div class="sc"><div class="lb">Positions</div><div class="val accent" id="s-pos">--</div></div>
 <div class="sc"><div class="lb">Exposure</div><div class="val" id="s-exp">--</div></div>
 <div class="sc"><div class="lb">Open Orders</div><div class="val" id="s-orders">--</div></div>
+<div class="sc" style="border-left:2px solid #f7931a"><div class="lb" style="color:#f7931a">&#8383; Crypto</div><div class="val" id="s-crypto">--</div><div style="font-size:9px;color:var(--dim);margin-top:2px" id="s-crypto-pnl"></div></div>
+<div class="sc" style="border-left:2px solid var(--accent)"><div class="lb">Stocks / FX</div><div class="val" id="s-stocks">--</div><div style="font-size:9px;color:var(--dim);margin-top:2px" id="s-stocks-pnl"></div></div>
 </div>
 
 <div class="cp gap" id="period-box">
@@ -1588,6 +1606,19 @@ async function loadOverview(){
     document.getElementById('s-orders').textContent=d.order_count??0;
     const eq=parseFloat(a.equity||0),ca=parseFloat(a.cash||0);
     const expEl=document.getElementById('s-exp');if(expEl)expEl.textContent=eq>0?((eq-ca)/eq*100).toFixed(1)+'%':'--';
+
+    // ── Crypto vs Stocks/FX capital breakdown ─────────────────────────────
+    const cDep=parseFloat(d.crypto_deployed||0),sDep=parseFloat(d.stock_deployed||0);
+    const cPnl=parseFloat(d.crypto_pnl||0),sPnl=parseFloat(d.stock_pnl||0);
+    const cEl=document.getElementById('s-crypto');
+    if(cEl)cEl.textContent=f$(cDep);
+    const cPnlEl=document.getElementById('s-crypto-pnl');
+    if(cPnlEl){cPnlEl.textContent=cDep>0?(cPnl>=0?'+':'')+f$(cPnl)+' P&L':'no positions';cPnlEl.style.color=cPnl>=0?'var(--green)':'var(--red)';}
+    const sEl=document.getElementById('s-stocks');
+    if(sEl)sEl.textContent=f$(sDep);
+    const sPnlEl=document.getElementById('s-stocks-pnl');
+    if(sPnlEl){sPnlEl.textContent=sDep>0?(sPnl>=0?'+':'')+f$(sPnl)+' P&L':'no positions';sPnlEl.style.color=sPnl>=0?'var(--green)':'var(--red)';}
+
     if(eq){
       if(!window._eq)window._eq=[];
       window._eq.push({t:new Date().toLocaleTimeString('en-US',{hour12:false}),v:eq});
