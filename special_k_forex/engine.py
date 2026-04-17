@@ -142,11 +142,7 @@ class ForexEngine:
         logger.info(f"Budget: {'unlimited' if budget == 0 else f'${budget:,.2f}'} | deployed: ${open_value:,.2f} | remaining: {'unlimited' if budget == 0 else f'${budget_remaining:,.2f}'}")
 
         active_positions = len(positions)
-        # In slow markets allow more concurrent small positions
-        max_pos = self.config.max_positions * 2 if all(
-            _regime_from_bars(self.fetcher.get_daily_bars(s)) == "slow"
-            for s in list(self.config.symbols)[:3]
-        ) else self.config.max_positions
+        max_pos = self.config.max_positions
 
         if active_positions >= max_pos:
             logger.info(f"Max positions ({max_pos}) reached — no new entries.")
