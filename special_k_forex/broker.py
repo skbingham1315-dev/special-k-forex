@@ -56,8 +56,11 @@ class Broker:
         return self.client.get_orders(filter=request)
 
     def cancel_orders_for_symbol(self, symbol: str) -> None:
+        # Crypto positions show as "SOLUSD" but orders use "SOL/USD" — match both
+        alt = normalise_crypto(symbol) if is_crypto(symbol) else symbol
         for order in self.get_open_orders():
-            if getattr(order, "symbol", "") == symbol:
+            order_sym = getattr(order, "symbol", "")
+            if order_sym == symbol or order_sym == alt:
                 try:
                     self.client.cancel_order_by_id(order.id)
                 except Exception as exc:
@@ -97,8 +100,9 @@ class Broker:
         Return set of symbols that had a filled BUY order placed today (local date).
         Used to identify same-day positions that would trigger PDT if closed today.
         """
-        from datetime import date, datetime, timezone
-        today_utc = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=timezone.utc)
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc)
+        today_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
         try:
             req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, after=today_utc, limit=200)
             orders = self.client.get_orders(filter=req)
@@ -125,7 +129,7 @@ class Broker:
         # Crypto: use GTC limit order (no bracket, no DAY TIF, fractional fine)
         if is_crypto(symbol):
             sym = normalise_crypto(symbol)
-            limit_price = round(max(quote_ask, 0.01) * 1.003, 2)
+            limit_price = round(max(quote_ask, 0.01) * 1.003, 4)
             logger.info(f"CRYPTO BUY {sym}: qty={qty} limit={limit_price}")
             request = LimitOrderRequest(
                 symbol=sym,

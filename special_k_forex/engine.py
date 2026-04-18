@@ -28,12 +28,14 @@ def _regime_from_bars(bars) -> str:
 
 
 def _position_side(pos) -> str:
-    """Returns 'long', 'short', or 'bounce' based on Alpaca position."""
+    """Returns 'long' or 'short' based on Alpaca position."""
     try:
         qty = float(pos.qty)
         side = getattr(pos, "side", None)
         if side:
-            return "long" if str(side).lower() == "long" else "short"
+            # PositionSide enum: .value is "long"/"short"; str() gives "PositionSide.LONG"
+            side_str = getattr(side, "value", str(side)).lower()
+            return "long" if side_str == "long" else "short"
         return "long" if qty > 0 else "short"
     except Exception:
         return "long"
@@ -235,18 +237,22 @@ class ForexEngine:
                     f"Macro: {sym_mem.get('macro_context','')}"
                 )
 
+            def _safe(val, default):
+                v = last_row.get(val, default)
+                return default if (v is None or (hasattr(v, '__float__') and __import__('math').isnan(float(v)))) else float(v)
+
             ai = analyse_signal(
                 symbol=symbol,
                 pair=getattr(self.config, "forex_pairs", {}).get(symbol, symbol),
                 regime=signal.regime,
                 score=signal.score + pol["score_delta"],
-                rsi=float(last_row.get("rsi", 50) or 50),
-                adx=float(last_row.get("adx", 20) or 20),
+                rsi=_safe("rsi", 50),
+                adx=_safe("adx", 20),
                 atr=atr, price=price,
-                sma50=float(last_row.get("sma50", price) or price),
-                sma200=float(last_row.get("sma200", price) or price),
-                macd_hist=float(last_row.get("macd_hist", 0) or 0),
-                pullback_10d_pct=float(last_row.get("pullback_10d_pct", 0) or 0),
+                sma50=_safe("sma50", price),
+                sma200=_safe("sma200", price),
+                macd_hist=_safe("macd_hist", 0),
+                pullback_10d_pct=_safe("pullback_10d_pct", 0),
                 notes=signal.notes,
                 political_activity=pol["summary"] if (pol["buys"] or pol["sells"]) else None,
                 trend_memory=trend_ctx,

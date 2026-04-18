@@ -356,7 +356,8 @@ class ForexETFStrategy:
         rsi = float(last["rsi"])
         close = float(last["close"])
         sma50 = float(last["sma50"])
-        sma200 = float(last.get("sma200") or sma50)
+        sma200_raw = last.get("sma200")
+        sma200 = sma50 if (sma200_raw is None or pd.isna(sma200_raw)) else float(sma200_raw)
 
         if side == "long":
             # Standard exits
