@@ -166,6 +166,9 @@ def _prioritise_symbols(symbols: list) -> list:
         return symbols
 
 def run_engine(dry=None):
+    if os.environ.get("DISABLE_TRADING", "").strip().lower() == "true":
+        log.info("DISABLE_TRADING=true — engine skipped.")
+        return
     try:
         params = get_risk_params()
         dry = dry if dry is not None else not LIVE_MODE["value"]
@@ -209,18 +212,19 @@ def scheduler_loop():
                     run_engine()
             # Crypto runs 24/7 regardless of market hours — use elapsed time
             # so it always fires every ~15 min regardless of when Railway started.
-            try:
-                import time as _time
-                from special_k_forex.crypto_engine import CryptoEngine
-                from special_k_forex.config import Settings
-                if _time.monotonic() - _last_crypto_run >= 900:  # 15 min
-                    cfg = Settings()
-                    if TRADE_BUDGET["value"] > 0:
-                        cfg.trade_budget = TRADE_BUDGET["value"]
-                    CryptoEngine(cfg, dry_run=not LIVE_MODE["value"]).run()
-                    _last_crypto_run = _time.monotonic()
-            except Exception as _ce:
-                log.error(f"Crypto engine error: {_ce}")
+            if os.environ.get("DISABLE_TRADING", "").strip().lower() != "true":
+                try:
+                    import time as _time
+                    from special_k_forex.crypto_engine import CryptoEngine
+                    from special_k_forex.config import Settings
+                    if _time.monotonic() - _last_crypto_run >= 900:  # 15 min
+                        cfg = Settings()
+                        if TRADE_BUDGET["value"] > 0:
+                            cfg.trade_budget = TRADE_BUDGET["value"]
+                        CryptoEngine(cfg, dry_run=not LIVE_MODE["value"]).run()
+                        _last_crypto_run = _time.monotonic()
+                except Exception as _ce:
+                    log.error(f"Crypto engine error: {_ce}")
         except Exception as e: log.error(f"Scheduler error: {e}")
         time.sleep(300)
 
