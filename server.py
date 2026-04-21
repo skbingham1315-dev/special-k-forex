@@ -203,40 +203,26 @@ def run_engine(dry=None):
         _ENGINE_LOCK.release()
 
 def scheduler_loop():
-    import time
-    import pytz as _pytz
-    import datetime as _dtt
-    _last_crypto_run = 0.0  # track elapsed time instead of clock minute
+    import time as _time
+    _last_crypto_run = 0.0
     while True:
         try:
-            from special_k_forex.market_hours import is_us_regular, is_us_extended
-            if is_us_regular():
-                run_engine()
-            elif is_us_extended():
-                _now = _dtt.datetime.now(_pytz.timezone("America/New_York"))
-                if _now.minute % 15 == 0:
-                    run_engine()
-            # Crypto runs 24/7 regardless of market hours — use elapsed time
-            # so it always fires every ~15 min regardless of when Railway started.
             if os.environ.get("DISABLE_TRADING", "").strip().lower() != "true":
-                try:
-                    import time as _time
+                if _time.monotonic() - _last_crypto_run >= 900:  # every 15 min, 24/7
                     from special_k_forex.crypto_engine import CryptoEngine
                     from special_k_forex.config import Settings
-                    if _time.monotonic() - _last_crypto_run >= 900:  # 15 min
-                        cfg = Settings()
-                        if TRADE_BUDGET["value"] > 0:
-                            cfg.trade_budget = TRADE_BUDGET["value"]
-                        CryptoEngine(cfg, dry_run=not LIVE_MODE["value"]).run()
-                        _last_crypto_run = _time.monotonic()
-                except Exception as _ce:
-                    log.error(f"Crypto engine error: {_ce}")
-        except Exception as e: log.error(f"Scheduler error: {e}")
-        time.sleep(300)
+                    cfg = Settings()
+                    if TRADE_BUDGET["value"] > 0:
+                        cfg.trade_budget = TRADE_BUDGET["value"]
+                    CryptoEngine(cfg, dry_run=not LIVE_MODE["value"]).run()
+                    _last_crypto_run = _time.monotonic()
+        except Exception as e:
+            log.error(f"Scheduler error: {e}")
+        _time.sleep(300)
 
 threading.Thread(target=scheduler_loop, daemon=True).start()
 threading.Thread(target=_trend_memory_daily_loop, daemon=True).start()
-log.info("Forex scheduler started - runs every 5 min during market hours")
+log.info("Crypto-only scheduler started — runs every 15 min 24/7")
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 def login_required(f):
