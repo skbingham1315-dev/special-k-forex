@@ -257,21 +257,24 @@ _CRYPTO_RSS_FEEDS = [
     "https://cointelegraph.com/rss",
     "https://decrypt.co/feed",
     "https://bitcoinmagazine.com/feed",
+    "https://www.theblock.co/rss.xml",
 ]
 
 _BULLISH_KEYWORDS = [
-    "etf approval", "institutional buying", "strategic reserve",
-    "bitcoin treasury", "rate cut", "regulatory clarity",
-    "coinbase listing", "protocol upgrade", "halving",
-    "whale accumulation", "exchange outflow", "adoption",
-    "bullish", "rally", "breakout", "all-time high", "ath",
+    "etf approved", "etf inflow", "etf approval", "institutional buying",
+    "strategic reserve", "bitcoin treasury", "rate cut", "regulatory clarity",
+    "sec approval", "coinbase listing", "protocol upgrade", "halving",
+    "whale accumulation", "exchange outflow", "adoption", "legal tender",
+    "nation state", "treasury allocation", "mainnet launch", "grayscale",
+    "blackrock bitcoin", "bullish", "rally", "breakout", "all-time high", "ath",
 ]
 
 _BEARISH_KEYWORDS = [
-    "sec lawsuit", "exchange hack", "rug pull", "ban",
-    "crackdown", "insolvency", "exploit", "fud",
-    "exchange inflow", "whale dump", "mt gox", "bankruptcy",
+    "sec lawsuit", "exchange hack", "rug pull", "ban", "china ban",
+    "crackdown", "insolvency", "exploit", "fud", "exchange collapse",
+    "exchange inflow", "whale dump", "whale sell", "mt gox", "bankruptcy",
     "sell-off", "crash", "collapse", "bearish", "regulation ban",
+    "fraud", "miner capitulation", "stablecoin depegged", "tax crackdown",
 ]
 
 

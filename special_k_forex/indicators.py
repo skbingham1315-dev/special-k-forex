@@ -113,6 +113,45 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def compute_crypto_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Crypto-optimised indicators. Uses EMAs (not SMAs) since crypto trades 24/7
+    and EMAs react faster to price changes. Adds StochRSI, ROC, vol_regime,
+    pullback_from_high. Requires only 60 bars (not 220).
+    """
+    df = compute_indicators(df)  # get base indicators (RSI, MACD, BB, ATR, OBV, etc.)
+
+    c = df["close"]
+    h = df["high"]
+    v = df["volume"]
+
+    # Crypto trend gates use EMAs not SMAs
+    df["ema50"]  = c.ewm(span=50,  adjust=False).mean()
+    df["ema200"] = c.ewm(span=200, adjust=False).mean()
+
+    # Stochastic RSI (more responsive for crypto volatility)
+    rsi_min = df["rsi"].rolling(14).min()
+    rsi_max = df["rsi"].rolling(14).max()
+    df["stoch_rsi"] = (df["rsi"] - rsi_min) / (rsi_max - rsi_min + 1e-10)
+
+    # Rate of Change
+    df["roc_10"] = c.pct_change(10) * 100
+    df["roc_30"] = c.pct_change(30) * 100
+
+    # Pullback from recent 20-day high (for breakout detection)
+    df["high_20d"]           = h.rolling(20).max()
+    df["pullback_from_high"] = (c - df["high_20d"]) / df["high_20d"] * 100
+
+    # Volatility percentile (for position sizing context)
+    df["atr_pct"]    = df["atr14"] / c * 100
+    df["vol_regime"] = df["atr_pct"].rolling(90).rank(pct=True)  # 0=low, 1=high vol
+
+    # EMA20 slope (3-bar diff for smoothness)
+    df["ema20_slope"] = df["ema20"].diff(3)
+
+    return df
+
+
 def classify_regime(df: pd.DataFrame) -> str:
     """
     Classify market regime based on ADX and ATR volatility.
