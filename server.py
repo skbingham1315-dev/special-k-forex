@@ -28,6 +28,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "specialk-forex-2026")
 DASH_PASSWORD  = os.environ.get("DASHBOARD_PASSWORD", "changeme")
 
 RISK_LEVEL   = {"value": 5}
+_ENGINE_LOCK = threading.Lock()  # prevents concurrent engine runs
 _alpaca_key  = os.environ.get("ALPACA_API_KEY", "")
 LIVE_MODE    = {"value": (
     os.environ.get("ALPACA_PAPER", "true").strip().lower() == "false"
@@ -169,6 +170,9 @@ def run_engine(dry=None):
     if os.environ.get("DISABLE_TRADING", "").strip().lower() == "true":
         log.info("DISABLE_TRADING=true — engine skipped.")
         return
+    if not _ENGINE_LOCK.acquire(blocking=False):
+        log.info("Engine already running — skipping concurrent run.")
+        return
     try:
         params = get_risk_params()
         dry = dry if dry is not None else not LIVE_MODE["value"]
@@ -195,6 +199,8 @@ def run_engine(dry=None):
     except Exception as e:
         log.error(f"Engine error: {e}")
         _LAST_ENGINE_RUN["result"] = str(e)
+    finally:
+        _ENGINE_LOCK.release()
 
 def scheduler_loop():
     import time
