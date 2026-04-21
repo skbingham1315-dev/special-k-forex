@@ -360,33 +360,238 @@ def get_crypto_news_sentiment() -> dict:
     return result
 
 
+# ── Halving Cycle Awareness ───────────────────────────────────────────────────
+
+def get_halving_cycle_score() -> dict:
+    """
+    Bitcoin halving cycle position. Last halving: April 19, 2024.
+    Months 0-18 post-halving = peak bull window (+1.5)
+    Months 18-36 = extended bull phase (+0.5)
+    Months 36-48 = late cycle, caution (0)
+    Beyond = pre-halving bear or next cycle (-0.5)
+    """
+    import datetime
+    key = "halving_cycle"
+    cached = _cached(key, ttl=86400)  # cache 24h — changes slowly
+    if cached:
+        return cached
+
+    LAST_HALVING = datetime.date(2024, 4, 19)
+    today = datetime.date.today()
+    months_since = (today - LAST_HALVING).days / 30.44
+
+    if months_since <= 18:
+        score_delta = 1.5
+        label = f"peak_bull_window ({months_since:.0f}mo post-halving)"
+    elif months_since <= 36:
+        score_delta = 0.5
+        label = f"extended_bull ({months_since:.0f}mo post-halving)"
+    elif months_since <= 48:
+        score_delta = 0.0
+        label = f"late_cycle ({months_since:.0f}mo post-halving)"
+    else:
+        score_delta = -0.5
+        label = f"pre_halving_bear ({months_since:.0f}mo post-halving)"
+
+    result = {
+        "months_post_halving": round(months_since, 1),
+        "score_delta": score_delta,
+        "label": label,
+        "available": True,
+    }
+    _store(key, result)
+    return result
+
+
+# ── Stablecoin Ratio ──────────────────────────────────────────────────────────
+
+def get_stablecoin_ratio() -> dict:
+    """
+    USDT + USDC share of total crypto market cap (CoinGecko global endpoint).
+    High ratio = dry powder waiting to buy = bullish.
+    Low ratio = everyone already in = caution near top.
+    """
+    key = "stablecoin_ratio"
+    cached = _cached(key)
+    if cached:
+        return cached
+
+    data = _get("https://api.coingecko.com/api/v3/global")
+    if not data:
+        result = {"ratio": 0.0, "score_delta": 0.0, "available": False}
+        _store(key, result)
+        return result
+
+    try:
+        pcts = data["data"]["market_cap_percentage"]
+        stable_pct = pcts.get("usdt", 0) + pcts.get("usdc", 0)
+
+        if stable_pct >= 12.0:
+            score_delta = 1.0   # lots of dry powder
+        elif stable_pct >= 8.0:
+            score_delta = 0.5
+        elif stable_pct <= 4.0:
+            score_delta = -1.0  # everyone all-in = near top
+        else:
+            score_delta = 0.0
+
+        result = {"ratio": round(stable_pct, 2), "score_delta": score_delta, "available": True}
+    except Exception as e:
+        log.warning(f"Stablecoin ratio parse failed: {e}")
+        result = {"ratio": 0.0, "score_delta": 0.0, "available": False}
+
+    _store(key, result)
+    return result
+
+
+# ── Open Interest Trend ───────────────────────────────────────────────────────
+
+def get_open_interest_trend(symbol: str) -> dict:
+    """
+    Binance perp futures open interest (free, no key).
+    Rising OI = new money entering, trend has legs (+1).
+    Falling OI = positions closing, trend weakening (-0.5).
+    """
+    binance_sym = _BINANCE_SYMBOL_MAP.get(symbol)
+    if not binance_sym:
+        return {"oi": 0.0, "score_delta": 0.0, "available": False}
+
+    key = f"oi_{binance_sym}"
+    cached = _cached(key, ttl=900)
+    if cached:
+        return cached
+
+    url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={binance_sym}"
+    data = _get(url)
+    if not data:
+        result = {"oi": 0.0, "score_delta": 0.0, "label": "unavailable", "available": False}
+        _store(key, result)
+        return result
+
+    try:
+        oi = float(data.get("openInterest", 0))
+        prev_key = f"oi_prev_{binance_sym}"
+        prev = _cache.get(prev_key)
+        prev_oi = prev[1] if prev else None
+        _store(prev_key, oi)
+
+        if prev_oi and prev_oi > 0:
+            pct_change = (oi - prev_oi) / prev_oi * 100
+            if pct_change > 2.0:
+                score_delta = 1.0
+                label = f"oi_rising +{pct_change:.1f}%"
+            elif pct_change < -2.0:
+                score_delta = -0.5
+                label = f"oi_falling {pct_change:.1f}%"
+            else:
+                score_delta = 0.0
+                label = "oi_stable"
+        else:
+            score_delta = 0.0
+            label = "oi_first_read"
+
+        result = {"oi": round(oi, 0), "score_delta": score_delta, "label": label, "available": True}
+    except Exception as e:
+        log.warning(f"OI parse failed {symbol}: {e}")
+        result = {"oi": 0.0, "score_delta": 0.0, "available": False}
+
+    _store(key, result)
+    return result
+
+
+# ── BTC Macro Cycle (200-day EMA) ─────────────────────────────────────────────
+
+def get_btc_macro_cycle() -> dict:
+    """
+    Is BTC above or below its 200-day EMA? Above = macro bull, below = macro bear.
+    Cached 6h — this is a slow-moving signal.
+    """
+    key = "btc_macro_cycle"
+    cached = _cached(key, ttl=21600)  # 6h cache
+    if cached:
+        return cached
+
+    try:
+        from .crypto_data import CryptoDataClient
+        from .indicators import compute_crypto_indicators
+        bars = CryptoDataClient().get_daily_bars("BTC/USD", lookback_days=210)
+        if bars is None or len(bars) < 60:
+            result = {"phase": "unknown", "score_delta": 0.0, "available": False}
+            _store(key, result)
+            return result
+
+        df = compute_crypto_indicators(bars)
+        last = df.iloc[-1]
+        close = float(last["close"])
+        ema200 = float(last.get("ema200") or close)
+
+        if close > ema200 * 1.02:
+            phase, score_delta = "bull", 1.0
+        elif close < ema200 * 0.98:
+            phase, score_delta = "bear", -1.0
+        else:
+            phase, score_delta = "neutral", 0.0
+
+        result = {
+            "phase": phase,
+            "close": round(close, 2),
+            "ema200": round(ema200, 2),
+            "score_delta": score_delta,
+            "available": True,
+        }
+    except Exception as e:
+        log.warning(f"BTC macro cycle failed: {e}")
+        result = {"phase": "unknown", "score_delta": 0.0, "available": False}
+
+    _store(key, result)
+    return result
+
+
 # ── Composite market context ──────────────────────────────────────────────────
 
 def get_market_context(symbol: str) -> dict:
     """
-    Aggregate all crypto market signals into a single context dict.
-    Used by the crypto engine and AI analyst.
+    Aggregate all 5 layers of crypto market signals.
+    Layer 1: Macro cycle (BTC 200d EMA)
+    Layer 2: Sentiment (Fear & Greed)
+    Layer 3: On-chain (dominance + funding + OI + stablecoin ratio)
+    Layer 4: News/narrative
+    Layer 5: Technical (handled per-symbol in CryptoStrategy)
 
-    Returns keys:
-        fear_greed, btc_dominance, funding, news,
-        btc_1h_change, bitcoin_season, total_on_chain_score (float)
+    Returns combined context dict with total_on_chain_score.
     """
-    fg   = get_fear_greed()
-    dom  = get_btc_dominance()
-    fund = get_funding_rate(symbol)
-    news = get_crypto_news_sentiment()
+    fg      = get_fear_greed()
+    dom     = get_btc_dominance()
+    fund    = get_funding_rate(symbol)
+    news    = get_crypto_news_sentiment()
     btc_chg = get_btc_1h_change()
+    halving = get_halving_cycle_score()
+    stable  = get_stablecoin_ratio()
+    oi      = get_open_interest_trend(symbol)
+    macro   = get_btc_macro_cycle()
 
-    total = fg["score_delta"] + dom["score_delta"] + fund["score_delta"] + news["score_delta"]
-    # Clamp to ±3
-    total = max(-3.0, min(3.0, total))
+    total = (
+        fg["score_delta"]
+        + dom["score_delta"]
+        + fund["score_delta"]
+        + news["score_delta"]
+        + halving["score_delta"]
+        + stable["score_delta"]
+        + oi["score_delta"]
+        + macro["score_delta"]
+    )
+    total = max(-4.0, min(4.0, total))  # clamp ±4 (more signals = wider range)
 
     return {
-        "fear_greed": fg,
-        "btc_dominance": dom,
-        "funding": fund,
-        "news": news,
-        "btc_1h_change": round(btc_chg, 2),
-        "bitcoin_season": is_bitcoin_season(),
+        "fear_greed":        fg,
+        "btc_dominance":     dom,
+        "funding":           fund,
+        "news":              news,
+        "btc_1h_change":     round(btc_chg, 2),
+        "bitcoin_season":    is_bitcoin_season(),
+        "halving":           halving,
+        "stablecoin_ratio":  stable,
+        "open_interest":     oi,
+        "macro_cycle":       macro,
         "total_on_chain_score": round(total, 2),
     }

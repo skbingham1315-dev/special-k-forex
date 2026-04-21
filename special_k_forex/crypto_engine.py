@@ -101,6 +101,12 @@ class CryptoStrategy:
             score += 2
             notes.append("rsi_bull_divergence")
 
+        # Exchange flow patterns
+        if last.get("exflow_accumulation"):
+            score += 1; notes.append("accumulation_pattern")
+        if last.get("exflow_distribution"):
+            score -= 1; notes.append("distribution_warning")
+
         if score < self.MIN_SCORE:
             return None
 
@@ -210,6 +216,8 @@ class CryptoStrategy:
             score += 1; notes.append("vol_spike")
         if last.get("near_fib_support"):
             score += 1; notes.append("fib_support")
+        if last.get("exflow_capitulation"):
+            score += 2; notes.append("vol_capitulation")
 
         if score < 4:
             return None
@@ -318,11 +326,15 @@ class CryptoEngine:
         bitcoin_season = mkt["bitcoin_season"]
         on_chain_score = mkt["total_on_chain_score"]
 
+        halving = mkt.get("halving", {})
+        stable  = mkt.get("stablecoin_ratio", {})
+        macro   = mkt.get("macro_cycle", {})
         log.info(
             f"  Market context — F&G: {fg.get('value','?')} ({fg.get('label','?')}) | "
-            f"BTC Dom: {dom.get('pct','?'):.1f}% ({'rising' if dom.get('rising') else 'falling' if dom.get('rising') is False else '?'}) | "
+            f"BTC Dom: {dom.get('pct','?'):.1f}% | "
             f"BTC 1H: {btc_chg:+.2f}% | News: {news.get('bullish_count',0)}↑/{news.get('bearish_count',0)}↓ | "
-            f"On-chain score: {on_chain_score:+.2f}"
+            f"Macro: {macro.get('phase','?')} | Halving: {halving.get('label','?')} | "
+            f"Stables: {stable.get('ratio','?')}% | On-chain score: {on_chain_score:+.2f}"
         )
 
         # ── Kill switch: Fear & Greed < 10 (capitulation) ─────────────────
@@ -341,7 +353,8 @@ class CryptoEngine:
             return
 
         # ── EXIT PASS — close all positions that hit exit conditions ──────────
-        # Handles both crypto AND any legacy equity positions (BA, EEM, USO etc.)
+        # Crypto positions use CryptoStrategy (EMA-based, 60-bar min).
+        # Legacy equity positions use ForexETFStrategy (SMA-based, 220-bar min).
         try:
             all_positions = {p.symbol: p for p in broker.get_positions()}
         except Exception:
@@ -349,25 +362,30 @@ class CryptoEngine:
 
         _crypto_keys = {s.replace("/", "") for s in CRYPTO_SYMBOLS}
 
+        from .strategy import ForexETFStrategy as _EquityExitStrategy
+        _equity_exit = _EquityExitStrategy()
+
         for sym_key, pos in list(all_positions.items()):
             side_val = getattr(pos.side, "value", str(pos.side)).lower()
             side = "long" if "long" in side_val else "short"
 
             if sym_key in _crypto_keys:
-                # Use crypto data client
                 crypto_sym = next((s for s in CRYPTO_SYMBOLS if s.replace("/", "") == sym_key), None)
                 bars = self.fetcher.get_daily_bars(crypto_sym) if crypto_sym else None
+                exit_strategy = self.strategy
+                min_bars = 60
             else:
-                # Use equity data client for legacy positions
                 try:
                     from .data import MarketDataClient
                     bars = MarketDataClient().get_daily_bars(sym_key)
                 except Exception:
                     bars = None
+                exit_strategy = _equity_exit
+                min_bars = 60  # equity also uses 60 so short history still exits
 
-            if bars is None or len(bars) < 60:
+            if bars is None or len(bars) < min_bars:
                 continue
-            should_exit, reason = self.strategy.should_exit(bars, side=side)
+            should_exit, reason = exit_strategy.should_exit(bars, side=side)
             if should_exit:
                 log.info(f"  EXIT {sym_key} [{side}]: {reason}")
                 if not self.dry_run:
@@ -459,7 +477,7 @@ class CryptoEngine:
 
             # Recompute indicators for the AI call
             bars = self.fetcher.get_daily_bars(signal.symbol)
-            indic = compute_indicators(bars) if bars is not None else {}
+            indic = compute_crypto_indicators(bars) if bars is not None else {}
             last_row = indic.iloc[-1].to_dict() if hasattr(indic, "iloc") and len(indic) else {}
             regime = classify_regime(indic)
 
@@ -474,8 +492,8 @@ class CryptoEngine:
                 adx=float(last_row.get("adx", 20) or 20),
                 atr=atr,
                 price=price,
-                sma50=float(last_row.get("sma50", price) or price),
-                sma200=float(last_row.get("sma200", price) or price),
+                sma50=float(last_row.get("ema50", last_row.get("sma50", price)) or price),
+                sma200=float(last_row.get("ema200", last_row.get("sma200", price)) or price),
                 macd_hist=float(last_row.get("macd_hist", 0) or 0),
                 pullback_10d_pct=float(last_row.get("pullback_10d_pct", 0) or 0),
                 notes=signal.notes,

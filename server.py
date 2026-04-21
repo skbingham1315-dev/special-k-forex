@@ -744,14 +744,37 @@ def api_set_risk():
 @app.route("/api/run_dry", methods=["POST"])
 @login_required
 def api_run_dry():
-    threading.Thread(target=run_engine, kwargs={"dry": True}, daemon=True).start()
+    def _run_crypto_dry():
+        try:
+            from special_k_forex.crypto_engine import CryptoEngine
+            from special_k_forex.config import Settings
+            cfg = Settings()
+            if TRADE_BUDGET["value"] > 0:
+                cfg.trade_budget = TRADE_BUDGET["value"]
+            CryptoEngine(cfg, dry_run=True).run()
+        except Exception as e:
+            log.error(f"Dry run error: {e}")
+    threading.Thread(target=_run_crypto_dry, daemon=True).start()
     return jsonify({"message": "Dry run started — check logs"})
 
 @app.route("/api/run_live", methods=["POST"])
 @login_required
 def api_run_live():
-    threading.Thread(target=run_engine, kwargs={"dry": False}, daemon=True).start()
-    return jsonify({"message": "Live run started"})
+    def _run_crypto_live():
+        try:
+            from special_k_forex.crypto_engine import CryptoEngine
+            from special_k_forex.config import Settings
+            cfg = Settings()
+            if TRADE_BUDGET["value"] > 0:
+                cfg.trade_budget = TRADE_BUDGET["value"]
+            CryptoEngine(cfg, dry_run=False).run()
+            _LAST_ENGINE_RUN["time"] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+            _LAST_ENGINE_RUN["result"] = "ok"
+        except Exception as e:
+            log.error(f"Manual crypto run error: {e}")
+            _LAST_ENGINE_RUN["result"] = str(e)
+    threading.Thread(target=_run_crypto_live, daemon=True).start()
+    return jsonify({"message": "Crypto engine live run started"})
 
 @app.route("/api/seed_history", methods=["POST"])
 @login_required
@@ -1066,7 +1089,7 @@ button:hover{background:rgba(0,229,255,.18)}
 .error{color:#ff4466;font-size:12px;margin-bottom:14px}
 </style></head>
 <body><div class="box">
-<div class="logo">SPECIAL<span>K</span> FOREX</div>
+<div class="logo">SPECIAL<span>K</span> CRYPTO</div>
 <div class="sub">CURRENCY TERMINAL</div>
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 <form method="POST" action="/login">
@@ -1176,7 +1199,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 </style></head>
 <body>
 <header>
-<div class="logo">SPECIAL<span>K</span> FOREX</div>
+<div class="logo">SPECIAL<span>K</span> CRYPTO</div>
 <div class="hr">
 <span><span class="sdot"></span><span id="market-status">CHECKING</span></span>
 <span id="clock">--:--:--</span>
@@ -1191,7 +1214,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <button class="active" onclick="showTab('overview',this)">Overview</button>
 <button onclick="showTab('positions',this)">Positions</button>
 <button onclick="showTab('performance',this)">Performance</button>
-<button onclick="showTab('research',this)">FX Research</button>
+<button onclick="showTab('research',this)">Research</button>
 <button onclick="showTab('crypto',this)">&#8383; Crypto</button>
 <button onclick="showTab('tradelog',this)">Trade Log</button>
 <button onclick="showTab('control',this)">Controls</button>
@@ -1325,7 +1348,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 
 <!-- FX RESEARCH -->
 <div id="page-research" class="page">
-<div class="ph"><span class="pt">FX Research — Signal Scanner</span>
+<div class="ph"><span class="pt">Crypto Research — Signal Scanner</span>
   <div style="display:flex;gap:8px">
     <button class="rb" onclick="loadIntelligence()" style="background:rgba(255,180,0,.12);color:#ffb400;border-color:rgba(255,180,0,.3)">AI Intelligence</button>
     <button class="rb" onclick="forceScan()">Scan Now</button>
@@ -2024,7 +2047,7 @@ async function loadCryptoTab(){
           <div style="font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:1px;margin-bottom:8px">CRYPTO ENGINE</div>
           <div style="font-family:var(--mono);font-size:12px;color:var(--fg);line-height:2">
             <div>&#9679; Runs every <span style="color:#f7931a">15 min</span> 24/7</div>
-            <div>&#9679; Scanning <span style="color:#f7931a">BTC · ETH · SOL · DOGE</span></div>
+            <div>&#9679; Scanning <span style="color:#f7931a">15 pairs: BTC · ETH · SOL · AVAX · DOGE · LINK · LTC · BCH · AAVE · UNI · XRP · DOT · MATIC · SHIB · ADA</span></div>
             <div>&#9679; Strategy: Long + Bounce signals</div>
             <div>&#9679; No PDT restrictions on crypto</div>
           </div>

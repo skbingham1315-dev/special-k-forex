@@ -149,6 +149,14 @@ def compute_crypto_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # EMA20 slope (3-bar diff for smoothness)
     df["ema20_slope"] = df["ema20"].diff(3)
 
+    # Exchange flow approximation (spec Part 9D)
+    # Capitulation: price drops hard on high volume = potential buy
+    df["exflow_capitulation"] = (df["vol_ratio"] > 1.5) & (df["roc_10"] < -5.0)
+    # Accumulation: price flat + volume drying up = smart money loading quietly
+    df["exflow_accumulation"] = (df["vol_ratio"] < 0.7) & (df["roc_10"].abs() < 2.0)
+    # Distribution: price up + volume declining = late buyers, weak hands
+    df["exflow_distribution"] = (df["vol_ratio"] < 0.7) & (df["roc_10"] > 3.0)
+
     return df
 
 
