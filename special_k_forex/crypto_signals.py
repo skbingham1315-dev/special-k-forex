@@ -163,6 +163,11 @@ _BINANCE_SYMBOL_MAP = {
     "BCH/USD": "BCHUSDT",
     "AAVE/USD": "AAVEUSDT",
     "UNI/USD": "UNIUSDT",
+    "XRP/USD": "XRPUSDT",
+    "DOT/USD": "DOTUSDT",
+    "MATIC/USD": "MATICUSDT",
+    "SHIB/USD": "SHIBUSDT",
+    "ADA/USD": "ADAUSDT",
 }
 
 

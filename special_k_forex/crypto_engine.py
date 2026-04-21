@@ -102,6 +102,37 @@ class CryptoEngine:
             log.warning(f"Heavy bearish news ({news['bearish_count']} bearish headlines) — halting entries.")
             return
 
+        # ── EXIT PASS — close crypto positions that hit exit conditions ───────
+        try:
+            all_positions = {p.symbol: p for p in broker.get_positions()}
+        except Exception:
+            all_positions = {}
+
+        crypto_position_keys = {s for s in all_positions if any(
+            s == sym.replace("/", "") for sym in CRYPTO_SYMBOLS
+        )}
+
+        for sym_key, pos in list(all_positions.items()):
+            if sym_key not in crypto_position_keys:
+                continue
+            side_val = getattr(pos.side, "value", str(pos.side)).lower()
+            side = "long" if "long" in side_val else "short"
+            # Fetch bars using CryptoDataClient format (BTC/USD not BTCUSD)
+            crypto_sym = next((s for s in CRYPTO_SYMBOLS if s.replace("/", "") == sym_key), None)
+            if not crypto_sym:
+                continue
+            bars = self.fetcher.get_daily_bars(crypto_sym)
+            if bars is None or len(bars) < 60:
+                continue
+            should_exit, reason = self.strategy.should_exit(bars, side=side)
+            if should_exit:
+                log.info(f"  CRYPTO EXIT {sym_key} [{side}]: {reason}")
+                if not self.dry_run:
+                    try:
+                        broker.close_position(sym_key)
+                    except Exception as exc:
+                        log.error(f"  Crypto exit failed {sym_key}: {exc}")
+
         # Get open positions
         try:
             positions = {p.symbol: p for p in broker.get_positions()}

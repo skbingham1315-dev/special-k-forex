@@ -9,11 +9,12 @@ from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
-# Supported crypto pairs
+# All supported crypto pairs on Alpaca
 CRYPTO_SYMBOLS = [
     "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD",
     "DOGE/USD", "LINK/USD", "LTC/USD", "BCH/USD",
-    "AAVE/USD", "UNI/USD",
+    "AAVE/USD", "UNI/USD", "XRP/USD", "DOT/USD",
+    "MATIC/USD", "SHIB/USD", "ADA/USD",
 ]
 
 class CryptoDataClient:

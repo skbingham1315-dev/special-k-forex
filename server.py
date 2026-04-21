@@ -187,7 +187,7 @@ def run_engine(dry=None):
         cfg.max_positions               = params["max_positions"]
         if TRADE_BUDGET["value"] > 0:
             cfg.trade_budget = TRADE_BUDGET["value"]
-        cfg.symbols = _prioritise_symbols(cfg.symbols)
+        cfg.symbols = []  # exits only — no new equity/forex entries (crypto-only mode)
         ForexEngine(cfg, dry_run=dry).run()
         _LAST_ENGINE_RUN["time"]   = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
         _LAST_ENGINE_RUN["result"] = "ok"
