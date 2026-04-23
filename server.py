@@ -174,21 +174,14 @@ def run_engine(dry=None):
         log.info("Engine already running — skipping concurrent run.")
         return
     try:
-        params = get_risk_params()
         dry = dry if dry is not None else not LIVE_MODE["value"]
-        log.info(f"Running forex engine | live={LIVE_MODE['value']}")
-        from special_k_forex.engine import ForexEngine
+        log.info(f"Running crypto engine | live={LIVE_MODE['value']}")
+        from special_k_forex.crypto_engine import CryptoEngine
         from special_k_forex.config import Settings
         cfg = Settings()
-        cfg.risk_per_trade_pct          = params["risk_per_trade_pct"]
-        cfg.stop_atr_multiplier         = params["stop_atr_multiplier"]
-        cfg.take_profit_atr_multiplier  = params["take_profit_atr_multiplier"]
-        cfg.min_signal_score            = params["min_signal_score"]
-        cfg.max_positions               = params["max_positions"]
         if TRADE_BUDGET["value"] > 0:
             cfg.trade_budget = TRADE_BUDGET["value"]
-        cfg.symbols = []  # exits only — no new equity/forex entries (crypto-only mode)
-        ForexEngine(cfg, dry_run=dry).run()
+        CryptoEngine(cfg, dry_run=dry).run()
         _LAST_ENGINE_RUN["time"]   = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
         _LAST_ENGINE_RUN["result"] = "ok"
         # Refresh trade log
@@ -403,105 +396,105 @@ def api_quotes():
         return jsonify({"error": str(e), "quotes": {}})
 
 def _run_scan_background():
-    """Run the full scan in background and populate the scan cache."""
+    """Run the full crypto scan in background and populate the scan cache."""
     try:
-        from special_k_forex.config import settings
-        from special_k_forex.data import MarketDataClient
-        from special_k_forex.indicators import compute_indicators, classify_regime
-        from special_k_forex.strategy import ForexETFStrategy
-        from special_k_forex.ai_analyst import analyse_signal, analyse_market_overview
-        from special_k_forex.political_tracker import get_political_signal
-        from special_k_forex.trend_memory import get_symbol_memory
-        from special_k_forex.legendary_trader_rules import score_trade_signal as _lt_score
+        from special_k_forex.crypto_data import CryptoDataClient, CRYPTO_SYMBOLS
+        from special_k_forex.crypto_engine import CryptoStrategy
+        from special_k_forex.indicators import compute_crypto_indicators, classify_regime
+        from special_k_forex.ai_analyst import analyse_crypto_signal
+        from special_k_forex.crypto_signals import get_market_context
         import pandas as _pd
         import time as _time
-        client = MarketDataClient(); strat = ForexETFStrategy(); results = []
+
+        client = CryptoDataClient()
+        strat  = CryptoStrategy()
+        results = []
+
         def _safe(val, rnd=4):
             try: return round(float(val), rnd) if not _pd.isna(val) else None
             except: return None
-        for sym in settings.symbols:
+
+        # Fetch market-wide context once for the whole scan
+        try:
+            mkt = get_market_context("BTC/USD")
+            on_chain_score = mkt.get("total_on_chain_score", 0)
+        except Exception:
+            mkt = {}
+            on_chain_score = 0
+
+        for sym in CRYPTO_SYMBOLS:
             bars = client.get_daily_bars(sym)
             if bars is None or len(bars) < 60:
-                results.append({"symbol": sym, "pair": FOREX_PAIRS.get(sym,sym), "signal": None, "score": 0, "notes": [], "regime": "normal", "last_close": None, "rsi": None, "sma50": None, "sma200": None, "atr": None, "trend_up": False}); continue
-            df = compute_indicators(bars); last = df.iloc[-1]
+                results.append({
+                    "symbol": sym, "pair": sym, "signal": None, "score": 0,
+                    "notes": [], "regime": "normal", "last_close": None,
+                    "rsi": None, "ema20": None, "ema50": None, "atr": None,
+                    "trend_up": False, "direction": None,
+                })
+                continue
+
+            df   = compute_crypto_indicators(bars)
+            last = df.iloc[-1]
             regime = classify_regime(df)
-            long_sig   = strat.evaluate(sym, bars)
-            short_sig  = strat.evaluate_short(sym, bars)
-            bounce_sig = strat.evaluate_bounce(sym, bars)
-            all_sigs = [s for s in [long_sig, short_sig, bounce_sig] if s is not None]
+
+            long_sig     = strat.evaluate(sym, bars)
+            breakout_sig = strat.evaluate_breakout(sym, bars)
+            bounce_sig   = strat.evaluate_bounce(sym, bars)
+            all_sigs     = [s for s in [long_sig, breakout_sig, bounce_sig] if s is not None]
             sig = max(all_sigs, key=lambda s: s.score) if all_sigs else None
-            pol = get_political_signal(sym)
+
             ai_data = {}
             if sig:
-                sym_mem = get_symbol_memory(sym)
-                trend_ctx = None
-                if sym_mem:
-                    trend_ctx = (
-                        f"Trend memory: {sym_mem.get('trend_direction','?')} / "
-                        f"{sym_mem.get('trend_strength','?')} | "
-                        f"Pattern: {sym_mem.get('pattern_notes','')} | "
-                        f"Watch for: {sym_mem.get('watch_for','')} | "
-                        f"Macro: {sym_mem.get('macro_context','')}"
-                    )
-                ai_data = analyse_signal(
-                    symbol=sym, pair=FOREX_PAIRS.get(sym, sym), regime=regime,
-                    score=sig.score + pol["score_delta"],
-                    rsi=_safe(last.get("rsi"), 1) or 50,
-                    adx=_safe(last.get("adx"), 1) or 20,
-                    atr=_safe(last.get("atr14")) or 0,
-                    price=_safe(last["close"]) or 0,
-                    sma50=_safe(last.get("sma50")) or 0,
-                    sma200=_safe(last.get("sma200")) or 0,
-                    macd_hist=_safe(last.get("macd_hist"), 5) or 0,
-                    pullback_10d_pct=_safe(last.get("pullback_10d_pct"), 2) or 0,
-                    notes=sig.notes,
-                    political_activity=pol["summary"] if (pol["buys"] or pol["sells"]) else None,
-                    trend_memory=trend_ctx,
-                    direction=sig.direction,
-                )
-            lt_result = None
-            if sig and sig.direction == "long":
                 try:
-                    _prices  = bars["close"].tolist()
-                    _volumes = bars["volume"].tolist()
-                    _sma150  = _safe(last.get("sma150")) or _safe(last.get("sma50")) or 0
-                    lt_result = _lt_score(
-                        symbol=sym, price_series=_prices, volume_series=_volumes,
-                        sma_50=_safe(last.get("sma50")) or 0, sma_150=_sma150,
-                        sma_200=_safe(last.get("sma200")) or 0,
+                    sym_ctx = get_market_context(sym)
+                    ai_data = analyse_crypto_signal(
+                        symbol=sym, regime=regime,
+                        score=sig.score + on_chain_score,
+                        rsi=_safe(last.get("rsi"), 1) or 50,
+                        adx=_safe(last.get("adx"), 1) or 20,
                         atr=_safe(last.get("atr14")) or 0,
-                        entry_price=_safe(last["close"]) or 0,
-                        stop_price=sig.stop_price, target_price=sig.take_profit_price,
+                        price=_safe(last["close"]) or 0,
+                        sma50=_safe(last.get("ema50")) or 0,
+                        sma200=_safe(last.get("ema200")) or 0,
+                        macd_hist=_safe(last.get("macd_hist"), 5) or 0,
+                        pullback_10d_pct=_safe(last.get("pullback_from_high"), 2) or 0,
+                        notes=sig.notes,
+                        direction=sig.direction,
+                        on_chain_context=sym_ctx,
                     )
                 except Exception:
-                    lt_result = None
+                    ai_data = {}
+
             results.append({
-                "symbol": sym, "pair": FOREX_PAIRS.get(sym,sym),
-                "signal": sig.action if sig else None, "direction": sig.direction if sig else None,
-                "score": sig.score if sig else 0, "notes": sig.notes if sig else [],
-                "long_score": long_sig.score if long_sig else 0,
-                "short_score": short_sig.score if short_sig else 0,
-                "bounce_score": bounce_sig.score if bounce_sig else 0,
-                "regime": regime, "last_close": _safe(last["close"]),
-                "rsi": _safe(last.get("rsi"), 1), "sma50": _safe(last.get("sma50")),
-                "sma150": _safe(last.get("sma150")), "sma200": _safe(last.get("sma200")),
-                "atr": _safe(last.get("atr14")), "bb_upper": _safe(last.get("bb_upper")),
-                "bb_lower": _safe(last.get("bb_lower")),
-                "trend_up": bool(_safe(last.get("sma50")) and _safe(last.get("sma200")) and float(last["close"]) > float(last["sma50"]) > float(last["sma200"])),
-                "macd_hist": _safe(last.get("macd_hist"), 5), "adx": _safe(last.get("adx"), 1),
-                "pullback_10d_pct": _safe(last.get("pullback_10d_pct"), 2), "political": pol,
-                "ai_confidence": ai_data.get("confidence"), "ai_action": ai_data.get("action"),
-                "ai_reason": ai_data.get("reason"),
-                "legendary_score": lt_result["score"] if lt_result else None,
-                "legendary_max": lt_result["max_possible"] if lt_result else None,
-                "legendary_recommend": lt_result["recommend"] if lt_result else None,
-                "legendary_breakdown": lt_result["breakdown"] if lt_result else None,
+                "symbol": sym, "pair": sym,
+                "signal": sig.action if sig else None,
+                "direction": sig.direction if sig else None,
+                "score": (sig.score + on_chain_score) if sig else 0,
+                "notes": sig.notes if sig else [],
+                "long_score":     long_sig.score     if long_sig     else 0,
+                "breakout_score": breakout_sig.score if breakout_sig else 0,
+                "bounce_score":   bounce_sig.score   if bounce_sig   else 0,
+                "regime": regime,
+                "last_close": _safe(last["close"]),
+                "rsi":   _safe(last.get("rsi"), 1),
+                "ema20": _safe(last.get("ema20")),
+                "ema50": _safe(last.get("ema50")),
+                "atr":   _safe(last.get("atr14")),
+                "macd_hist": _safe(last.get("macd_hist"), 5),
+                "vol_ratio": _safe(last.get("vol_ratio"), 2),
+                "trend_up": bool(
+                    _safe(last.get("ema20")) and _safe(last.get("ema50"))
+                    and float(last["close"]) > float(last.get("ema20", 0)) > float(last.get("ema50", 0))
+                ),
+                "ai_confidence": ai_data.get("confidence"),
+                "ai_action":     ai_data.get("action"),
+                "ai_reason":     ai_data.get("reason"),
             })
+
         results.sort(key=lambda x: x["score"], reverse=True)
-        overview = analyse_market_overview(results)
-        _scan_cache["data"] = {"results": results, "ai_overview": overview, "scanned_at": _time.time()}
+        _scan_cache["data"] = {"results": results, "ai_overview": "", "scanned_at": _time.time()}
         _scan_cache["at"] = _time.time()
-        log.info(f"Background scan complete: {len(results)} symbols")
+        log.info(f"Background crypto scan complete: {len(results)} symbols")
     except Exception as e:
         log.error(f"Background scan error: {e}")
 

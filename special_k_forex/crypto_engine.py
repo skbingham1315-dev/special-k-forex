@@ -353,8 +353,9 @@ class CryptoEngine:
             return
 
         # ── EXIT PASS — close all positions that hit exit conditions ──────────
+        # Non-crypto (equity/ETF) positions are ALWAYS force-closed immediately —
+        # this system is crypto-only, no equity should be held.
         # Crypto positions use CryptoStrategy (EMA-based, 60-bar min).
-        # Legacy equity positions use ForexETFStrategy (SMA-based, 220-bar min).
         try:
             all_positions = {p.symbol: p for p in broker.get_positions()}
         except Exception:
@@ -362,30 +363,26 @@ class CryptoEngine:
 
         _crypto_keys = {s.replace("/", "") for s in CRYPTO_SYMBOLS}
 
-        from .strategy import ForexETFStrategy as _EquityExitStrategy
-        _equity_exit = _EquityExitStrategy()
-
         for sym_key, pos in list(all_positions.items()):
             side_val = getattr(pos.side, "value", str(pos.side)).lower()
             side = "long" if "long" in side_val else "short"
 
-            if sym_key in _crypto_keys:
-                crypto_sym = next((s for s in CRYPTO_SYMBOLS if s.replace("/", "") == sym_key), None)
-                bars = self.fetcher.get_daily_bars(crypto_sym) if crypto_sym else None
-                exit_strategy = self.strategy
-                min_bars = 60
-            else:
-                try:
-                    from .data import MarketDataClient
-                    bars = MarketDataClient().get_daily_bars(sym_key)
-                except Exception:
-                    bars = None
-                exit_strategy = _equity_exit
-                min_bars = 60  # equity also uses 60 so short history still exits
-
-            if bars is None or len(bars) < min_bars:
+            if sym_key not in _crypto_keys:
+                # Force-close all equity/ETF positions — crypto-only mode
+                log.info(f"  FORCE EXIT equity {sym_key} [{side}]: crypto-only mode")
+                if not self.dry_run:
+                    try:
+                        broker.close_position(sym_key)
+                    except Exception as exc:
+                        log.error(f"  Force exit failed {sym_key}: {exc}")
                 continue
-            should_exit, reason = exit_strategy.should_exit(bars, side=side)
+
+            crypto_sym = next((s for s in CRYPTO_SYMBOLS if s.replace("/", "") == sym_key), None)
+            bars = self.fetcher.get_daily_bars(crypto_sym) if crypto_sym else None
+
+            if bars is None or len(bars) < 60:
+                continue
+            should_exit, reason = self.strategy.should_exit(bars, side=side)
             if should_exit:
                 log.info(f"  EXIT {sym_key} [{side}]: {reason}")
                 if not self.dry_run:
