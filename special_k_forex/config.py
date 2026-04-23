@@ -30,20 +30,32 @@ def _env_list(name: str, default: List[str]) -> List[str]:
     return [item.strip().upper() for item in raw.split(",") if item.strip()]
 
 
-# Default watchlist — forex ETFs + crypto
-#   Forex ETFs: FXE/FXB/FXY/FXC/FXA = major currency pairs, UUP = USD index
-#   Crypto: BTC/USD, ETH/USD, SOL/USD, DOGE/USD — 24/7, no PDT, high volatility
+# Default watchlist — crypto only (no forex ETFs, no equities)
 _DEFAULT_SYMBOLS = [
-    "FXE", "FXB", "FXY", "FXC", "FXA", "UUP",
-    "BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD",
+    "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "DOGE/USD",
+    "LINK/USD", "LTC/USD", "BCH/USD", "AAVE/USD", "UNI/USD",
+    "XRP/USD", "DOT/USD", "MATIC/USD", "SHIB/USD", "ADA/USD",
 ]
+
+
+def _detect_paper_mode() -> bool:
+    """
+    Detect paper mode. Explicit ALPACA_PAPER env var always wins.
+    If not set, auto-detect: live keys start with 'AK' → live mode.
+    Default to paper only when no env var and no live-key prefix.
+    """
+    explicit = os.getenv("ALPACA_PAPER")
+    if explicit is not None:
+        return explicit.strip().lower() not in {"0", "false", "no", "off"}
+    # Auto-detect from key prefix — live Alpaca keys start with AK
+    return not os.getenv("ALPACA_API_KEY", "").strip().startswith("AK")
 
 
 @dataclass(slots=True)
 class Settings:
     alpaca_api_key: str = os.getenv("ALPACA_API_KEY", "").strip()
     alpaca_secret_key: str = os.getenv("ALPACA_SECRET_KEY", "").strip()
-    alpaca_paper: bool = _env_bool("ALPACA_PAPER", True)
+    alpaca_paper: bool = field(default_factory=_detect_paper_mode)
 
     symbols: List[str] = field(default_factory=lambda: _env_list("SYMBOLS", _DEFAULT_SYMBOLS))
 
