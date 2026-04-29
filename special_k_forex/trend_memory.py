@@ -74,31 +74,36 @@ def build_symbol_memory(symbol: str, pair: str, df, indicators_df) -> dict:
 
     last = indicators_df.iloc[-1]
 
+    def _f(col, alt=None, default=0.0):
+        v = last.get(col, last.get(alt, default) if alt else default)
+        try: return float(v) if v is not None else default
+        except: return default
+
     price_data = _price_summary(df)
-    prompt = f"""You are a forex market analyst studying {symbol} ({pair}).
+    prompt = f"""You are a quantitative crypto analyst studying {symbol}.
 
 Recent 30-day price history (OHLCV):
 {price_data}
 
 Current indicators:
-- Price: {float(last['close']):.4f}
-- SMA50: {float(last['sma50']):.4f} | SMA200: {float(last['sma200']):.4f}
-- RSI(14): {float(last['rsi']):.1f}
-- ADX: {float(last['adx']):.1f}
-- ATR: {float(last['atr14']):.4f}
-- BB Upper: {float(last['bb_upper']):.4f} | BB Lower: {float(last['bb_lower']):.4f}
-- MACD Hist: {float(last['macd_hist']):.5f}
-- 10-day pullback: {float(last['pullback_10d_pct']):.2f}%
+- Price: {_f('close'):.4f}
+- EMA20: {_f('ema20'):.4f} | EMA50: {_f('ema50'):.4f}
+- RSI(14): {_f('rsi', default=50):.1f}
+- ADX: {_f('adx', default=20):.1f}
+- ATR: {_f('atr14'):.4f}
+- BB Upper: {_f('bb_upper'):.4f} | BB Lower: {_f('bb_lower'):.4f}
+- MACD Hist: {_f('macd_hist'):.5f}
+- 10-day pullback from high: {_f('pullback_from_high', 'pullback_10d_pct'):.2f}%
 
-Analyze this instrument and respond in exactly this JSON format (no other text):
+Analyze this crypto asset and respond in exactly this JSON format (no other text):
 {{
   "trend_direction": "<bullish|bearish|neutral>",
   "trend_strength": "<strong|moderate|weak>",
   "key_support": <price float>,
   "key_resistance": <price float>,
   "pattern_notes": "<what pattern or structure is forming, max 20 words>",
-  "macro_context": "<why this currency pair is moving this way, max 20 words>",
-  "watch_for": "<what indicator/price action would trigger a buy signal, max 20 words>",
+  "market_context": "<what is driving this crypto asset right now, max 20 words>",
+  "watch_for": "<what would trigger a strong buy entry, max 20 words>",
   "risk_notes": "<key risks to watch, max 15 words>"
 }}"""
 
@@ -137,13 +142,13 @@ def build_macro_overview(symbols_memory: dict) -> str:
     if not summaries:
         return ""
 
-    prompt = f"""You are a macro forex analyst. Here is the current state of 6 currency ETFs:
+    prompt = f"""You are a macro crypto analyst. Here is the current state of these crypto assets:
 
 {chr(10).join(summaries)}
 
 Write 3 sentences:
-1. Which currencies are showing the strongest trends and why
-2. What the overall USD picture looks like
+1. Which assets are showing the strongest trends and why
+2. What the overall market structure looks like (BTC leading vs alt season)
 3. What to watch for in the coming week
 
 Plain text only, no markdown, no bullet points."""

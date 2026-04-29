@@ -158,6 +158,7 @@ def analyse_crypto_signal(
     notes: list,
     direction: str = "long",
     on_chain_context: Optional[dict] = None,
+    trend_memory: Optional[dict] = None,
 ) -> dict:
     """
     Ask Claude to validate a crypto trading signal.
@@ -207,6 +208,19 @@ def analyse_crypto_signal(
         on_chain_section = "\n\nOn-Chain & Market Intelligence:\n" + "\n".join(f"  {l}" for l in on_chain_lines)
         on_chain_section += f"\n  Composite on-chain score: {on_chain_score:+.2f}"
 
+    memory_section = ""
+    if trend_memory:
+        mem = trend_memory
+        memory_section = (
+            f"\n\nLearned Trend Memory (updated daily by AI analysis):\n"
+            f"  Trend: {mem.get('trend_direction','?')} / {mem.get('trend_strength','?')}\n"
+            f"  Pattern: {mem.get('pattern_notes','?')}\n"
+            f"  Key support: {mem.get('key_support','?')} | Resistance: {mem.get('key_resistance','?')}\n"
+            f"  Context: {mem.get('market_context', mem.get('macro_context','?'))}\n"
+            f"  Watch for: {mem.get('watch_for','?')}\n"
+            f"  Risk: {mem.get('risk_notes','?')}"
+        )
+
     prompt = f"""You are a quantitative crypto trading analyst using the Special K v2.0 strategy framework.
 
 Asset: {symbol}
@@ -219,7 +233,7 @@ ATR(14): {atr:.4f} ({atr/price*100:.2f}% of price — crypto volatility)
 MACD histogram: {macd_hist:.5f} ({'positive' if macd_hist > 0 else 'negative'})
 10-day move: {pullback_10d_pct:.2f}%
 Quant signal score: {score}/10
-Signal notes: {', '.join(notes)}{on_chain_section}
+Signal notes: {', '.join(notes)}{on_chain_section}{memory_section}
 
 Key rules:
 - Only take longs when price is above 50 EMA daily (trend alignment)

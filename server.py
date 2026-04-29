@@ -96,11 +96,11 @@ def _refresh_trend_memory():
         if not needs_refresh():
             log.info("Trend memory: still fresh, skipping refresh")
             return
-        from special_k_forex.config import settings
-        from special_k_forex.data import MarketDataClient
-        from special_k_forex.indicators import compute_indicators
-        client = MarketDataClient()
-        refresh_memory(settings.symbols, FOREX_PAIRS, client, compute_indicators)
+        from special_k_forex.crypto_data import CryptoDataClient, CRYPTO_SYMBOLS
+        from special_k_forex.indicators import compute_crypto_indicators
+        client = CryptoDataClient()
+        pairs = {sym: sym for sym in CRYPTO_SYMBOLS}
+        refresh_memory(CRYPTO_SYMBOLS, pairs, client, compute_crypto_indicators)
     except Exception as e:
         log.warning(f"Trend memory refresh error: {e}")
 

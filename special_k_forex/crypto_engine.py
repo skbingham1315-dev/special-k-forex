@@ -14,6 +14,10 @@ from .crypto_data import CryptoDataClient, CRYPTO_SYMBOLS
 from .indicators import compute_crypto_indicators, classify_regime
 from .risk import RiskManager
 from .ai_analyst import analyse_crypto_signal
+try:
+    from .trend_memory import get_symbol_memory as _get_symbol_memory
+except Exception:
+    def _get_symbol_memory(symbol): return {}
 from .crypto_signals import (
     get_market_context,
     btc_flash_crash_active,
@@ -541,6 +545,8 @@ class CryptoEngine:
             # Get per-symbol on-chain context (funding rate differs per symbol)
             sym_ctx = get_market_context(signal.symbol)
 
+            sym_mem = _get_symbol_memory(signal.symbol)
+
             ai = analyse_crypto_signal(
                 symbol=signal.symbol,
                 regime=regime,
@@ -556,6 +562,7 @@ class CryptoEngine:
                 notes=signal.notes,
                 direction=signal.direction,
                 on_chain_context=sym_ctx,
+                trend_memory=sym_mem if sym_mem else None,
             )
 
             log.info(f"  {signal.symbol}: AI conf={ai['confidence']} action={ai['action']} [{signal.direction}] — {ai['reason']}")
