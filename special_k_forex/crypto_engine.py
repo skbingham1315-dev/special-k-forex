@@ -371,6 +371,34 @@ class CryptoEngine:
             log.warning(f"Heavy bearish news ({news['bearish_count']} bearish headlines) — halting entries.")
             return
 
+        # ── STALE ORDER CLEANUP — cancel unfilled crypto BUY orders > 4 hours old ──
+        # GTC orders sit forever if price moves away. Cancel and re-evaluate each run
+        # so entries are always based on current market price.
+        try:
+            from datetime import timezone as _tz
+            _now = datetime.now(_tz.utc)
+            for _order in broker.get_open_orders():
+                _sym = getattr(_order, "symbol", "")
+                _side = str(getattr(getattr(_order, "side", None), "value", "")).lower()
+                if _sym not in _crypto_keys and "/" not in _sym:
+                    continue  # not crypto
+                if _side != "buy":
+                    continue  # leave stop/TP legs alone
+                _created = getattr(_order, "created_at", None)
+                if _created:
+                    try:
+                        if hasattr(_created, "tzinfo") and _created.tzinfo:
+                            _age_h = (_now - _created).total_seconds() / 3600
+                        else:
+                            _age_h = 999  # unknown age → cancel
+                        if _age_h > 4:
+                            broker.client.cancel_order_by_id(_order.id)
+                            log.info(f"  Cancelled stale order {_sym} (age {_age_h:.1f}h)")
+                    except Exception as _ce:
+                        log.debug(f"  Could not cancel stale order {_sym}: {_ce}")
+        except Exception as _oe:
+            log.debug(f"  Stale order cleanup error: {_oe}")
+
         # ── EXIT PASS — close all positions that hit exit conditions ──────────
         # Non-crypto (equity/ETF) positions are ALWAYS force-closed immediately —
         # this system is crypto-only, no equity should be held.
