@@ -336,6 +336,9 @@ class CryptoEngine:
             log.warning("Kill switch active — skipping crypto trades.")
             return
 
+        buying_power = float(getattr(account, "buying_power", equity))
+        _bp_ok = not self.risk.buying_power_too_low(buying_power)
+
         # ── Fetch market-wide context once (cached 1h) ────────────────────
         mkt = get_market_context("BTC/USD")
         fg  = mkt["fear_greed"]
@@ -454,6 +457,10 @@ class CryptoEngine:
 
         crypto_positions = {s for s in positions if len(s) >= 6 and not s.startswith("EW")}
         max_crypto = self.config.max_positions  # crypto-only — use all position slots
+
+        if not _bp_ok:
+            log.info("Skipping entry scan — buying power below minimum threshold.")
+            return
 
         symbols_to_scan = CRYPTO_SYMBOLS
         env_crypto = getattr(self.config, "crypto_symbols", None)

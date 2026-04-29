@@ -167,9 +167,9 @@ def analyse_crypto_signal(
     if client is None:
         return {"confidence": 5, "action": "enter", "reason": "AI analysis unavailable — proceeding at reduced confidence.", "raw": ""}
 
-    trend_desc = "above both SMA50 and SMA200 (uptrend)" if price > sma50 > sma200 else \
-                 "above SMA50 but below SMA200 (partial trend)" if price > sma50 else \
-                 "below SMA50 (downtrend)"
+    trend_desc = "above both EMA20 and EMA50 (uptrend)" if price > sma50 > sma200 else \
+                 "above EMA20 but below EMA50 (partial trend)" if price > sma50 else \
+                 "below EMA20 (downtrend)"
 
     direction_context = {
         "long":   "LONG (trend-pullback buy): price in uptrend, RSI dipped 30-50, expecting bounce higher.",
@@ -213,7 +213,7 @@ Asset: {symbol}
 Trade type: {direction_context}
 Current price: ${price:.4f}
 Market regime: {regime.upper()} (ADX={adx:.1f})
-Trend: {trend_desc} — SMA50=${sma50:.4f}, SMA200=${sma200:.4f}
+Trend: {trend_desc} — EMA20=${sma50:.4f}, EMA50=${sma200:.4f}
 RSI(14): {rsi:.1f}
 ATR(14): {atr:.4f} ({atr/price*100:.2f}% of price — crypto volatility)
 MACD histogram: {macd_hist:.5f} ({'positive' if macd_hist > 0 else 'negative'})
