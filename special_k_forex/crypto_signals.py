@@ -166,7 +166,6 @@ _BINANCE_SYMBOL_MAP = {
     "XRP/USD": "XRPUSDT",
     "DOT/USD": "DOTUSDT",
     "MATIC/USD": "MATICUSDT",
-    "SHIB/USD": "SHIBUSDT",
     "ADA/USD": "ADAUSDT",
 }
 

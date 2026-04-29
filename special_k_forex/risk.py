@@ -1,4 +1,5 @@
 import logging
+import datetime
 from dataclasses import dataclass
 from typing import Optional
 
@@ -17,11 +18,14 @@ class RiskManager:
     def __init__(self, config):
         self.config = config
         self._daily_start_equity: Optional[float] = None
+        self._start_date: Optional[datetime.date] = None
 
     def set_start_equity(self, equity: float):
-        if self._daily_start_equity is None:
+        today = datetime.date.today()
+        if self._daily_start_equity is None or self._start_date != today:
             self._daily_start_equity = equity
-            logger.info(f"Daily start equity set: ${equity:,.2f}")
+            self._start_date = today
+            logger.info(f"Daily start equity set: ${equity:,.2f} ({today})")
 
     def kill_switch_triggered(self, current_equity: float) -> bool:
         if self._daily_start_equity is None:

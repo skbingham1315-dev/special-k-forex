@@ -30,11 +30,11 @@ def _env_list(name: str, default: List[str]) -> List[str]:
     return [item.strip().upper() for item in raw.split(",") if item.strip()]
 
 
-# Default watchlist — crypto only (no forex ETFs, no equities)
+# Default watchlist — crypto only (no forex ETFs, no equities, no sub-cent coins)
 _DEFAULT_SYMBOLS = [
     "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "DOGE/USD",
     "LINK/USD", "LTC/USD", "BCH/USD", "AAVE/USD", "UNI/USD",
-    "XRP/USD", "DOT/USD", "MATIC/USD", "SHIB/USD", "ADA/USD",
+    "XRP/USD", "DOT/USD", "MATIC/USD", "ADA/USD",
 ]
 
 

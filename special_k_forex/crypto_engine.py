@@ -272,14 +272,33 @@ log = logging.getLogger(__name__)
 _BTC_MAJORS = {"BTC/USD", "ETH/USD", "BTCUSD", "ETHUSD"}
 
 
+def _price_decimals(price: float) -> int:
+    """Return decimal places needed for meaningful price increments at this price level."""
+    if price >= 1000:  return 2   # BTC, ETH  ($94,000 → 2 dp fine)
+    if price >= 10:    return 3   # SOL, AVAX, LINK  ($130 → 3 dp fine)
+    if price >= 0.1:   return 5   # DOGE, XRP, ADA, MATIC ($0.17 → needs 5 dp)
+    if price >= 0.001: return 7   # mid-small alts
+    return 8                       # micro-price alts
+
+
 def _place_crypto_bracket(broker_client, symbol: str, qty: float, price: float, stop: float, tp: float):
     """Place a bracket buy order for crypto using GTC (24/7 markets)."""
     from alpaca.trading.requests import LimitOrderRequest, StopLossRequest, TakeProfitRequest
     from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
     alpaca_sym = symbol.replace("/", "")  # "BTC/USD" -> "BTCUSD"
-    limit_price = round(price * 1.001, 2)
-    safe_stop   = round(min(stop,  limit_price * 0.999), 2)
-    safe_tp     = round(max(tp,    limit_price * 1.001), 2)
+    prec        = _price_decimals(price)
+    limit_price = round(price * 1.001, prec)
+    safe_stop   = round(min(stop,  limit_price * 0.999), prec)
+    safe_tp     = round(max(tp,    limit_price * 1.001), prec)
+    if limit_price <= 0 or safe_stop <= 0 or safe_tp <= limit_price:
+        raise ValueError(
+            f"Invalid prices after rounding (prec={prec}): "
+            f"limit={limit_price} stop={safe_stop} tp={safe_tp}"
+        )
+    log.info(
+        f"  ORDER {alpaca_sym}: qty={qty:.6f} limit={limit_price} "
+        f"stop={safe_stop} tp={safe_tp} (prec={prec})"
+    )
     request = LimitOrderRequest(
         symbol=alpaca_sym, qty=round(qty, 6),
         side=OrderSide.BUY,
@@ -406,7 +425,7 @@ class CryptoEngine:
             return
 
         crypto_positions = {s for s in positions if len(s) >= 6 and not s.startswith("EW")}
-        max_crypto = max(2, self.config.max_positions // 2)
+        max_crypto = self.config.max_positions  # crypto-only — use all position slots
 
         symbols_to_scan = CRYPTO_SYMBOLS
         env_crypto = getattr(self.config, "crypto_symbols", None)
@@ -434,8 +453,14 @@ class CryptoEngine:
             sigs = [s for s in [long_sig, breakout_sig, bounce_sig] if s is not None]
             if sigs:
                 best = max(sigs, key=lambda s: s.score)
-                # Boost score with on-chain composite
+                # Apply on-chain composite boost THEN re-gate on minimum score
                 best.score = round(best.score + on_chain_score)
+                if best.score < self.strategy.MIN_SCORE:
+                    log.info(
+                        f"  {symbol}: post-boost score {best.score} < min {self.strategy.MIN_SCORE} "
+                        f"(on-chain={on_chain_score:+.1f}) — skip"
+                    )
+                    continue
                 candidates.append(best)
                 log.info(
                     f"  {symbol}: best={best.direction} score={best.score} "

@@ -9,12 +9,13 @@ from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
-# All supported crypto pairs on Alpaca
+# Supported crypto pairs — must be priced above $0.001 for reliable bracket order precision.
+# SHIB removed: price ~$0.000013 causes rounding to $0.00 → orders always fail.
 CRYPTO_SYMBOLS = [
     "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD",
     "DOGE/USD", "LINK/USD", "LTC/USD", "BCH/USD",
     "AAVE/USD", "UNI/USD", "XRP/USD", "DOT/USD",
-    "MATIC/USD", "SHIB/USD", "ADA/USD",
+    "MATIC/USD", "ADA/USD",
 ]
 
 class CryptoDataClient:
