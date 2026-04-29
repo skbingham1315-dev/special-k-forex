@@ -512,7 +512,12 @@ def _run_scan_background():
             })
 
         results.sort(key=lambda x: x["score"], reverse=True)
-        _scan_cache["data"] = {"results": results, "ai_overview": "", "scanned_at": _time.time()}
+        try:
+            from special_k_forex.ai_analyst import analyse_crypto_market_overview
+            ai_overview = analyse_crypto_market_overview(results)
+        except Exception:
+            ai_overview = ""
+        _scan_cache["data"] = {"results": results, "ai_overview": ai_overview, "scanned_at": _time.time()}
         _scan_cache["at"] = _time.time()
         log.info(f"Background crypto scan complete: {len(results)} symbols")
     except Exception as e:
@@ -883,26 +888,32 @@ def api_crypto_scan():
     """Quick crypto market overview for the dashboard."""
     try:
         from special_k_forex.crypto_data import CryptoDataClient, CRYPTO_SYMBOLS
-        from special_k_forex.indicators import compute_indicators
-        from special_k_forex.strategy import ForexETFStrategy
+        from special_k_forex.indicators import compute_crypto_indicators, classify_regime
+        from special_k_forex.crypto_engine import CryptoStrategy
         client   = CryptoDataClient()
-        strategy = ForexETFStrategy()
+        strategy = CryptoStrategy()
         results  = []
         for sym in CRYPTO_SYMBOLS:
-            bars = client.get_daily_bars(sym, lookback_days=100)
+            bars = client.get_daily_bars(sym)
             if bars is None or len(bars) < 60:
                 continue
-            df   = compute_indicators(bars)
+            df   = compute_crypto_indicators(bars)
             last = df.iloc[-1]
-            bounce = strategy.evaluate_bounce(sym, bars)
+            long_sig     = strategy.evaluate(sym, bars)
+            breakout_sig = strategy.evaluate_breakout(sym, bars)
+            bounce_sig   = strategy.evaluate_bounce(sym, bars)
+            all_sigs     = [s for s in [long_sig, breakout_sig, bounce_sig] if s is not None]
+            best = max(all_sigs, key=lambda s: s.score) if all_sigs else None
             results.append({
                 "symbol":  sym,
                 "price":   round(float(last["close"]), 4),
                 "rsi":     round(float(last.get("rsi", 50) or 50), 1),
                 "adx":     round(float(last.get("adx", 20) or 20), 1),
-                "signal":  bounce.direction if bounce else None,
-                "score":   bounce.score if bounce else 0,
-                "change_pct": round(float(last.get("pullback_10d_pct", 0) or 0), 2),
+                "regime":  classify_regime(df),
+                "trend_up": bool(float(last["close"]) > float(last.get("ema20", 0) or 0) > float(last.get("ema50", 0) or 0)),
+                "signal":  best.direction if best else None,
+                "score":   best.score if best else 0,
+                "change_pct": round(float(last.get("pullback_from_high", 0) or 0), 2),
             })
         results.sort(key=lambda x: x["score"], reverse=True)
         return jsonify({"crypto": results})
@@ -915,15 +926,17 @@ def api_crypto_chart():
     """Price history + trade markers + P&L for crypto chart tab."""
     sym = request.args.get("symbol", "BTC/USD")
     try:
-        from special_k_forex.data import MarketDataClient, is_crypto, normalise_crypto
-        from special_k_forex.indicators import compute_indicators
-        fetcher = MarketDataClient()
-        bars = fetcher.get_daily_bars(sym, days=180)
+        from special_k_forex.crypto_data import CryptoDataClient
+        from special_k_forex.indicators import compute_crypto_indicators
+        fetcher = CryptoDataClient()
+        bars = fetcher.get_daily_bars(sym)
         price_labels, price_data, entry_points, exit_points = [], [], [], []
         if bars is not None and not bars.empty:
-            df = compute_indicators(bars)
-            for _, row in df.tail(90).iterrows():
-                d = str(row.get("date", ""))[:10]
+            df = compute_crypto_indicators(bars)
+            for idx_row, row in df.tail(90).iterrows():
+                d = str(idx_row)[:10] if not str(idx_row).startswith("0") else str(row.get("date",""))[:10]
+                try: d = str(idx_row.date()) if hasattr(idx_row, "date") else d
+                except: pass
                 price_labels.append(d)
                 price_data.append(round(float(row["close"]), 4))
 
