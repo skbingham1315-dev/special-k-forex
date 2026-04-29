@@ -130,12 +130,8 @@ def get_risk_params():
     }
 
 def is_market_open():
-    et = pytz.timezone("America/New_York")
-    now = datetime.datetime.now(et)
-    if now.weekday() >= 5: return False
-    market_open  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=16, minute=0,  second=0, microsecond=0)
-    return market_open <= now <= market_close
+    # Crypto trades 24/7 — always active, no market hours restrictions
+    return True
 
 def get_broker():
     from special_k_forex.broker import Broker
@@ -1237,9 +1233,11 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <button onclick="showTab('control',this)">Controls</button>
 </nav>
 <div class="tape-wrap"><div class="tape" id="tape">Loading crypto prices...</div></div>
-<div id="market-clock" style="background:#060c12;border-bottom:1px solid var(--border);padding:5px 16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center">
-<span style="font-family:var(--mono);font-size:9px;color:var(--dim);letter-spacing:1px;margin-right:4px">MARKETS</span>
-<div id="market-clock-items" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+<div id="crypto-engine-bar" style="background:#060c12;border-bottom:1px solid var(--border);padding:5px 16px;display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+<span style="font-family:var(--mono);font-size:9px;color:#f7931a;letter-spacing:1px">&#8383; CRYPTO ENGINE</span>
+<span style="font-family:var(--mono);font-size:9px;color:var(--green)">● RUNNING 24/7</span>
+<span style="font-family:var(--mono);font-size:9px;color:var(--dim)">14 SYMBOLS &nbsp;·&nbsp; SCAN EVERY 15 MIN &nbsp;·&nbsp; EQUITY TRADING: <span style="color:var(--red)">OFF</span></span>
+<span id="engine-bar-last" style="font-family:var(--mono);font-size:9px;color:var(--dim);margin-left:auto">Last run: --</span>
 </div>
 
 <!-- OVERVIEW -->
@@ -1717,17 +1715,20 @@ async function loadOverview(){
     const sr=await fetch('/api/status');const sd=await sr.json();
     const ss=document.getElementById('sys-status');
     if(ss){
-      const moc=sd.market_open?'<span style="color:var(--green)">● OPEN</span>':'<span style="color:var(--red)">● CLOSED</span>';
+      // Update engine countdown with last run time
+      if(sd.last_engine_run&&sd.last_engine_run!=='never'){
+        try{window._lastEngineRun=new Date(sd.last_engine_run.replace(' UTC','Z'));}catch(e){}
+      }
       ss.innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;padding:4px 0">`+
         `<div style="color:var(--dim)">Mode</div><div style="color:var(--accent)">${sd.mode}</div>`+
-        `<div style="color:var(--dim)">Market</div><div>${moc}</div>`+
+        `<div style="color:var(--dim)">Crypto Market</div><div><span style="color:var(--green)">● 24/7 ACTIVE</span></div>`+
         `<div style="color:var(--dim)">Risk Level</div><div style="color:var(--accent)">${sd.risk_level}/10</div>`+
         `<div style="color:var(--dim)">Uptime</div><div>${sd.uptime}</div>`+
-        `<div style="color:var(--dim)">Last Run</div><div style="color:var(--dim)">${sd.last_engine_run}</div>`+
-        `<div style="color:var(--dim)">Open Trades</div><div style="color:var(--accent)">${sd.open_trades}</div>`+
+        `<div style="color:var(--dim)">Last Engine Run</div><div style="color:var(--dim)">${sd.last_engine_run}</div>`+
+        `<div style="color:var(--dim)">Open Positions</div><div style="color:var(--accent)">${sd.open_trades}</div>`+
         `<div style="color:var(--dim)">Closed Trades</div><div>${sd.closed_trades}</div>`+
         `<div style="color:var(--dim)">AI Brain</div><div>${sd.ai_connected?'<span style="color:var(--green)">● CONNECTED</span>':'<span style="color:var(--red)">● NO KEY</span>'}</div>`+
-        `<div style="color:var(--dim)">Trend Memory</div><div style="${sd.trend_memory_stale?'color:var(--dim)':'color:var(--green)'}">${sd.trend_symbols_loaded} symbols${sd.trend_memory_stale?' (stale)':' ✓'}</div>`+
+        `<div style="color:var(--dim)">Equity Trading</div><div><span style="color:var(--red)">● DISABLED</span></div>`+
         `</div>`;
     }
   }catch(e){}
@@ -1956,18 +1957,17 @@ async function loadControl(){
     const sr=await fetch('/api/status');const sd=await sr.json();
     const ss=document.getElementById('ctrl-status');
     if(ss){
-      const moc=sd.market_open?'<span style="color:var(--green)">● OPEN</span>':'<span style="color:var(--red)">● CLOSED</span>';
       ss.innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;padding:4px 0">`+
         `<div style="color:var(--dim)">Mode</div><div style="color:var(--accent)">${sd.mode}</div>`+
-        `<div style="color:var(--dim)">Market</div><div>${moc}</div>`+
+        `<div style="color:var(--dim)">Crypto Market</div><div><span style="color:var(--green)">● 24/7 ACTIVE</span></div>`+
+        `<div style="color:var(--dim)">Equity Trading</div><div><span style="color:var(--red)">● DISABLED</span></div>`+
         `<div style="color:var(--dim)">Risk Level</div><div style="color:var(--accent)">${sd.risk_level}/10</div>`+
         `<div style="color:var(--dim)">Uptime</div><div>${sd.uptime}</div>`+
-        `<div style="color:var(--dim)">Last Run</div><div style="color:var(--dim)">${sd.last_engine_run}</div>`+
+        `<div style="color:var(--dim)">Last Engine Run</div><div style="color:var(--dim)">${sd.last_engine_run}</div>`+
         `<div style="color:var(--dim)">Last Result</div><div style="color:var(--dim)">${sd.last_engine_result}</div>`+
-        `<div style="color:var(--dim)">Open Trades</div><div style="color:var(--accent)">${sd.open_trades}</div>`+
+        `<div style="color:var(--dim)">Open Positions</div><div style="color:var(--accent)">${sd.open_trades}</div>`+
         `<div style="color:var(--dim)">Closed Trades</div><div>${sd.closed_trades}</div>`+
         `<div style="color:var(--dim)">AI Brain</div><div>${sd.ai_connected?'<span style="color:var(--green)">● CONNECTED</span>':'<span style="color:var(--red)">● NO KEY</span>'}</div>`+
-        `<div style="color:var(--dim)">Trend Memory</div><div style="${sd.trend_memory_stale?'color:var(--dim)':'color:var(--green)'}">${sd.trend_symbols_loaded} symbols${sd.trend_memory_stale?' (stale)':' ✓'}</div>`+
         `</div>`;
     }
   }catch(e){}
@@ -2123,21 +2123,19 @@ async function loadCryptoTab(){
   loadCryptoChart();
 }
 
-// ── Market Clock ──────────────────────────────────────────────────────────────
-async function loadMarketClock(){
+// ── Engine Bar — update last run time ─────────────────────────────────────────
+async function updateEngineBar(){
   try{
-    const r=await fetch('/api/markets');const d=await r.json();
-    const el=document.getElementById('market-clock-items');
-    if(!el||!d.markets)return;
-    el.innerHTML=d.markets.map(m=>{
-      const col=m.open?(m.id==='crypto'?'#f7931a':m.id.startsWith('nyc')?'var(--green)':'#00cfff'):'var(--dim)';
-      const dot=m.open?'●':'○';
-      return `<span style="font-family:var(--mono);font-size:10px;color:${col};white-space:nowrap" title="${m.name} ${m.local_day} ${m.local_time}">${dot} ${m.flag} ${m.name} <span style="font-size:9px;opacity:0.7">${m.local_time}</span></span>`;
-    }).join('');
+    const r=await fetch('/api/status');const d=await r.json();
+    const el=document.getElementById('engine-bar-last');
+    if(el&&d.last_engine_run)el.textContent='Last run: '+d.last_engine_run;
+    if(d.last_engine_run&&d.last_engine_run!=='never'){
+      try{window._lastEngineRun=new Date(d.last_engine_run.replace(' UTC','Z'));}catch(e){}
+    }
   }catch(e){}
 }
-setInterval(loadMarketClock, 60000);
-loadMarketClock();
+setInterval(updateEngineBar, 30000);
+updateEngineBar();
 
 // ── Hedge ──────────────────────────────────────────────────────────────────
 async function loadHedge(){
@@ -2272,34 +2270,24 @@ async function toggleMode(){
   try{const r=await fetch('/api/mode');const d=await r.json();const live=!d.live;const r2=await fetch('/api/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({live})});const d2=await r2.json();document.getElementById('mode-btn').textContent=d2.live?'LIVE':'PAPER';document.getElementById('mode-btn').style.borderColor=d2.live?'var(--red)':'var(--green)';document.getElementById('mode-btn').style.color=d2.live?'var(--red)':'var(--green)';lg('Mode: '+d2.mode,'');}catch(e){}
 }
 
-// ── Market Status ──────────────────────────────────────────────────────────
+// ── Market Status — Crypto 24/7 ────────────────────────────────────────────
+// Crypto never closes. Show engine cycle countdown instead of stock hours.
+window._lastEngineRun = null;
 function updateMarketStatus(){
-  const now=new Date();const et=new Date(now.toLocaleString("en-US",{timeZone:"America/New_York"}));
-  const day=et.getDay();const h=et.getHours(),m=et.getMinutes(),s=et.getSeconds();
-  const totalSec=h*3600+m*60+s;
-  const preSec=4*3600;const openSec=9*3600+30*60;const closeSec=16*3600;const afterSec=20*3600;
-  const isWeekday=day>=1&&day<=5;
-  const statusEl=document.getElementById("market-status");const countEl=document.getElementById("countdown");
-  if(!isWeekday){
-    statusEl.textContent="WEEKEND";statusEl.style.color="var(--dim)";
-    const monday=new Date(et);monday.setDate(et.getDate()+(day===6?2:1));monday.setHours(4,0,0,0);
-    const diff=Math.floor((monday-et)/1000);countEl.textContent=`Pre-market opens in ${Math.floor(diff/3600)}h ${Math.floor((diff%3600)/60)}m`;
-    return;
-  }
-  if(totalSec>=openSec&&totalSec<closeSec){
-    statusEl.textContent="MARKET OPEN";statusEl.style.color="var(--green)";
-    const rem=closeSec-totalSec;countEl.textContent=`Closes in ${Math.floor(rem/3600)}h ${String(Math.floor((rem%3600)/60)).padStart(2,"0")}m`;
-  }else if(totalSec>=preSec&&totalSec<openSec){
-    statusEl.textContent="PRE-MARKET";statusEl.style.color="#ffb400";
-    const rem=openSec-totalSec;countEl.textContent=`Regular opens in ${Math.floor(rem/3600)}h ${String(Math.floor((rem%3600)/60)).padStart(2,"0")}m`;
-  }else if(totalSec>=closeSec&&totalSec<afterSec){
-    statusEl.textContent="AFTER HOURS";statusEl.style.color="#ffb400";
-    const rem=afterSec-totalSec;countEl.textContent=`After-hours close in ${Math.floor(rem/3600)}h ${String(Math.floor((rem%3600)/60)).padStart(2,"0")}m`;
-  }else{
-    statusEl.textContent="MARKET CLOSED";statusEl.style.color="var(--red)";
-    const tomorrow=new Date(et);if(totalSec>=afterSec){tomorrow.setDate(et.getDate()+1);}
-    tomorrow.setHours(4,0,0,0);
-    const diff=Math.floor((tomorrow-et)/1000);countEl.textContent=`Pre-market opens in ${Math.floor(diff/3600)}h ${Math.floor((diff%3600)/60)}m`;
+  const statusEl=document.getElementById("market-status");
+  const countEl=document.getElementById("countdown");
+  if(statusEl){statusEl.textContent="CRYPTO 24/7";statusEl.style.color="var(--green)";}
+  // Countdown to next engine cycle (every 15 min from last run)
+  if(countEl&&window._lastEngineRun){
+    const nextRun=new Date(window._lastEngineRun.getTime()+15*60*1000);
+    const sec=Math.max(0,Math.floor((nextRun-new Date())/1000));
+    if(sec>0){
+      countEl.textContent=`Next scan in ${Math.floor(sec/60)}m ${String(sec%60).padStart(2,'0')}s`;
+    }else{
+      countEl.textContent='Engine scanning now...';
+    }
+  }else if(countEl){
+    countEl.textContent='Engine runs every 15 min';
   }
 }
 setInterval(updateMarketStatus,1000);updateMarketStatus();
