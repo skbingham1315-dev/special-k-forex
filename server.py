@@ -254,9 +254,9 @@ def _alpaca_orders_as_trades():
         for buy in sorted(buys, key=_ts):
             sym   = getattr(buy,"symbol","")
             entry = _fl(getattr(buy,"filled_avg_price",0))
-            qty   = int(_fl(getattr(buy,"filled_qty",0)))
+            qty   = _fl(getattr(buy,"filled_qty",0))   # keep float — crypto uses fractional qty
             bt    = _ts(buy)
-            if not entry or not qty: continue
+            if not entry or qty <= 0: continue
             matched = None
             for s in sells_by_sym.get(sym, []):
                 sid = str(getattr(s,"id",id(s)))
@@ -320,9 +320,18 @@ def api_account():
         crypto_pnl      = sum(float(p.unrealized_pl or 0) for p in pos if _is_crypto_sym(p.symbol))
         stock_pnl       = sum(float(p.unrealized_pl or 0) for p in pos if not _is_crypto_sym(p.symbol))
 
+        def _pair_label(sym: str) -> str:
+            """Return readable pair name: BTCUSD → BTC/USD, SOLUSDT → SOL/USDT"""
+            s = sym.upper()
+            if s.endswith("USDT") and len(s) > 4:
+                return s[:-4] + "/USDT"
+            if s.endswith("USD") and len(s) > 3:
+                return s[:-3] + "/USD"
+            return FOREX_PAIRS.get(sym, sym)
+
         pos_list = [{
             "symbol": p.symbol,
-            "pair": FOREX_PAIRS.get(p.symbol, p.symbol),
+            "pair": _pair_label(p.symbol),
             "qty": float(p.qty or 0),
             "side": str(getattr(p.side, "value", p.side) or "long"),
             "avg_entry_price": float(p.avg_entry_price or 0),
@@ -377,28 +386,37 @@ def api_positions():
 @app.route("/api/quotes")
 @login_required
 def api_quotes():
+    """Fetch latest crypto prices for the ticker tape (batch call — fast)."""
     try:
-        import time
+        from special_k_forex.crypto_data import CRYPTO_SYMBOLS
+        from alpaca.data.historical.crypto import CryptoHistoricalDataClient
+        from alpaca.data.requests import CryptoLatestBarRequest
         from special_k_forex.config import settings
-        from special_k_forex.data import MarketDataClient
-        client = MarketDataClient()
+
+        crypto_client = CryptoHistoricalDataClient()
+        syms = CRYPTO_SYMBOLS  # 14 symbols, fetched in one API call
+        req  = CryptoLatestBarRequest(symbol_or_symbols=syms)
+        latest = crypto_client.get_crypto_latest_bar(req)
+
         out = {}
-        for sym in settings.symbols:
-            q = client.get_latest_quote(sym)
-            if not q: continue
-            price = float(q.get("ask") or q.get("bid") or 0)
-            cached = _prev_close_cache.get(sym)
-            if not cached or (time.time() - cached[1]) > 300:
-                bars = client.get_daily_bars(sym, days=5)
-                prev = float(bars.iloc[-2]["close"]) if bars is not None and len(bars) >= 2 else None
-                if prev: _prev_close_cache[sym] = (prev, time.time())
-            else:
-                prev = cached[0]
-            chg = round((price - prev) / prev * 100, 2) if prev and price else None
-            out[sym] = {"price": price, "bid": q.get("bid",0), "ask": q.get("ask",0),
-                        "change_pct": chg, "prev_close": prev, "pair": FOREX_PAIRS.get(sym,sym)}
+        for sym in syms:
+            bar = latest.get(sym)
+            if not bar:
+                continue
+            price = float(bar.close)
+            prev  = _prev_close_cache.get(sym, (None,))[0]
+            if prev is None:
+                # Store first-seen price as baseline; update cache on subsequent calls
+                _prev_close_cache[sym] = (price, 0)
+                prev = price
+            chg = round((price - prev) / prev * 100, 2) if prev else None
+            # Update cache with this price so next call sees a delta
+            _prev_close_cache[sym] = (price, 0)
+            out[sym] = {"price": price, "bid": price, "ask": price,
+                        "change_pct": chg, "pair": sym}
         return jsonify({"quotes": out})
     except Exception as e:
+        log.warning(f"Crypto quotes failed: {e}")
         return jsonify({"error": str(e), "quotes": {}})
 
 def _run_scan_background():
@@ -1218,7 +1236,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <button onclick="showTab('tradelog',this)">Trade Log</button>
 <button onclick="showTab('control',this)">Controls</button>
 </nav>
-<div class="tape-wrap"><div class="tape" id="tape">Loading FX data...</div></div>
+<div class="tape-wrap"><div class="tape" id="tape">Loading crypto prices...</div></div>
 <div id="market-clock" style="background:#060c12;border-bottom:1px solid var(--border);padding:5px 16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center">
 <span style="font-family:var(--mono);font-size:9px;color:var(--dim);letter-spacing:1px;margin-right:4px">MARKETS</span>
 <div id="market-clock-items" style="display:flex;gap:10px;flex-wrap:wrap"></div>
@@ -1243,7 +1261,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <div class="sc"><div class="lb">Exposure</div><div class="val" id="s-exp">--</div></div>
 <div class="sc"><div class="lb">Open Orders</div><div class="val" id="s-orders">--</div></div>
 <div class="sc" style="border-left:2px solid #f7931a"><div class="lb" style="color:#f7931a">&#8383; Crypto</div><div class="val" id="s-crypto">--</div><div style="font-size:9px;color:var(--dim);margin-top:2px" id="s-crypto-pnl"></div></div>
-<div class="sc" style="border-left:2px solid var(--accent)"><div class="lb">Stocks / FX</div><div class="val" id="s-stocks">--</div><div style="font-size:9px;color:var(--dim);margin-top:2px" id="s-stocks-pnl"></div></div>
+<div class="sc" style="border-left:2px solid var(--dim)"><div class="lb" style="color:var(--dim)">Non-Crypto</div><div class="val" id="s-stocks">--</div><div style="font-size:9px;color:var(--dim);margin-top:2px" id="s-stocks-pnl"></div></div>
 </div>
 
 <div class="cp gap" id="period-box">
@@ -1280,7 +1298,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <div class="cp"><h3>P&L Distribution</h3><canvas id="pnlDistChart" height="160"></canvas></div>
 </div>
 <div class="g2 gap">
-<div class="cp"><h3>Exposure by ETF</h3><canvas id="exposureChart" height="170"></canvas></div>
+<div class="cp"><h3>Crypto Exposure</h3><canvas id="exposureChart" height="170"></canvas></div>
 <div class="cp"><h3>Cash vs Invested</h3><canvas id="allocationChart" height="170"></canvas></div>
 </div>
 <div class="cp gap">
@@ -1313,14 +1331,14 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 </div>
 <div class="tw gap">
 <h3 style="padding:12px 14px 8px">Positions Detail</h3>
-<table><thead><tr><th>ETF</th><th>Pair</th><th>Qty</th><th>Entry</th><th>Current</th><th>Mkt Val</th><th>Unreal P&L</th><th>P&L %</th><th>Action</th></tr></thead>
+<table><thead><tr><th>Symbol</th><th>Name</th><th>Qty</th><th>Entry</th><th>Current</th><th>Mkt Val</th><th>Unreal P&L</th><th>P&L %</th><th>Action</th></tr></thead>
 <tbody id="pos-tbody"></tbody></table>
 </div>
 </div>
 
 <!-- PERFORMANCE -->
 <div id="page-performance" class="page">
-<div class="ph"><span class="pt">Performance Analytics</span><button class="rb" onclick="loadPerformance()">Refresh</button></div>
+<div class="ph"><span class="pt" style="color:#f7931a">&#8383; Crypto Performance Analytics</span><button class="rb" onclick="loadPerformance()">Refresh</button></div>
 <div class="sr">
 <div class="sc"><div class="lb">Total Trades</div><div class="val accent" id="p-total">--</div></div>
 <div class="sc"><div class="lb">Win Rate</div><div class="val" id="p-winrate">--</div></div>
@@ -1336,7 +1354,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <div class="cp"><h3>Win / Loss</h3><canvas id="winLossChart" height="180"></canvas></div>
 </div>
 <div class="g2 gap">
-<div class="cp"><h3>P&L per ETF</h3><canvas id="symPnlChart" height="180"></canvas></div>
+<div class="cp"><h3>P&L by Coin</h3><canvas id="symPnlChart" height="180"></canvas></div>
 <div class="cp"><h3>Trade Duration</h3><canvas id="durationChart" height="180"></canvas></div>
 </div>
 <div class="cp gap"><h3>Drawdown Over Time</h3><canvas id="drawdownChart" height="120"></canvas></div>
@@ -1357,11 +1375,11 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <div id="intelligence-panel" style="display:none;margin-bottom:16px"></div>
 <div class="g2 gap">
 <div class="cp"><h3>Signal Scores</h3><canvas id="scoreChart" height="220"></canvas></div>
-<div class="cp"><h3>RSI by ETF</h3><canvas id="rsiChart" height="220"></canvas></div>
+<div class="cp"><h3>RSI by Symbol</h3><canvas id="rsiChart" height="220"></canvas></div>
 </div>
 <div id="scan-cards" style="margin-top:16px"></div>
 <div style="font-family:var(--mono);font-size:10px;color:var(--dim);padding:8px 0">
-  Signal fires at score &ge; 4 &middot; Trend gate: Close &gt; SMA50 &gt; SMA200 &middot; Entry: RSI pullback + Bollinger proximity
+  Signal fires at score &ge; 4 &middot; Trend gate: Close &gt; EMA20 &gt; EMA50 &middot; Entry: RSI 40-55 pullback + MACD + volume &middot; 24/7 crypto
 </div>
 <div class="ph" style="margin-top:16px"><span class="pt" style="color:#f7931a">&#8383; CRYPTO MARKETS — 24/7</span><button class="rb" onclick="loadCrypto()">Refresh</button></div>
 <div id="crypto-cards" class="g3 gap"></div>
@@ -1376,7 +1394,17 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
       <option value="BTC/USD">BTC/USD</option>
       <option value="ETH/USD">ETH/USD</option>
       <option value="SOL/USD">SOL/USD</option>
+      <option value="AVAX/USD">AVAX/USD</option>
       <option value="DOGE/USD">DOGE/USD</option>
+      <option value="LINK/USD">LINK/USD</option>
+      <option value="LTC/USD">LTC/USD</option>
+      <option value="BCH/USD">BCH/USD</option>
+      <option value="AAVE/USD">AAVE/USD</option>
+      <option value="UNI/USD">UNI/USD</option>
+      <option value="XRP/USD">XRP/USD</option>
+      <option value="DOT/USD">DOT/USD</option>
+      <option value="MATIC/USD">MATIC/USD</option>
+      <option value="ADA/USD">ADA/USD</option>
     </select>
     <button class="rb" onclick="loadCryptoChart()">Load Chart</button>
     <button class="rb" onclick="loadCryptoTab()" style="background:rgba(247,147,26,.12);color:#f7931a;border-color:rgba(247,147,26,.3)">Refresh All</button>
@@ -1418,11 +1446,11 @@ input[type=range]{flex:1;accent-color:var(--accent);height:4px;cursor:pointer}
 <div class="ph"><span class="pt">Trade Log</span><button class="rb" onclick="loadTradeLog()">Refresh</button></div>
 <div class="g2 gap">
 <div class="cp"><h3>Trade P&L Over Time</h3><canvas id="tradeTimeChart" height="180"></canvas></div>
-<div class="cp"><h3>P&L by ETF</h3><canvas id="etfPnlChart" height="180"></canvas></div>
+<div class="cp"><h3>P&L by Coin</h3><canvas id="etfPnlChart" height="180"></canvas></div>
 </div>
 <div class="tw">
 <h3 style="padding:12px 14px 8px">All Trades</h3>
-<table><thead><tr><th>Time</th><th>ETF</th><th>Pair</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&L $</th><th>P&L %</th><th>Reason</th><th>Status</th></tr></thead>
+<table><thead><tr><th>Time</th><th>Symbol</th><th>Name</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&L $</th><th>P&L %</th><th>Reason</th><th>Status</th></tr></thead>
 <tbody id="log-tbody"></tbody></table>
 </div>
 </div>
@@ -1719,7 +1747,8 @@ async function loadPositions(){
     }
     document.getElementById('pos-tbody').innerHTML=pos.length?pos.map(p=>{
       const pl=parseFloat(p.unrealized_pl||0);const plpc=(parseFloat(p.unrealized_plpc||0)*100).toFixed(2);
-      return `<tr><td style="color:var(--accent)">${p.symbol}</td><td style="color:var(--dim)">${p.pair||''}</td><td>${Math.round(p.qty)}</td><td>${f4(p.avg_entry_price)}</td><td>${f4(p.current_price)}</td><td>${f$(p.market_value)}</td><td style="color:${pl>=0?'var(--green)':'var(--red)'}">${f$(pl)}</td><td style="color:${pl>=0?'var(--green)':'var(--red)'}">${plpc}%</td><td><button class="btn bd" style="padding:4px 8px;font-size:10px" onclick="closePos('${p.symbol}')">CLOSE</button></td></tr>`;
+      const qtyStr=parseFloat(p.qty)%1===0?parseFloat(p.qty).toFixed(0):parseFloat(p.qty).toFixed(6).replace(/\.?0+$/,'');
+      return `<tr><td style="color:var(--accent)">${p.symbol}</td><td style="color:var(--dim)">${p.pair||''}</td><td>${qtyStr}</td><td>${f4(p.avg_entry_price)}</td><td>${f4(p.current_price)}</td><td>${f$(p.market_value)}</td><td style="color:${pl>=0?'var(--green)':'var(--red)'}">${f$(pl)}</td><td style="color:${pl>=0?'var(--green)':'var(--red)'}">${plpc}%</td><td><button class="btn bd" style="padding:4px 8px;font-size:10px" onclick="closePos('${p.symbol}')">CLOSE</button></td></tr>`;
     }).join(''):'<tr><td colspan="9" style="color:var(--dim);text-align:center;padding:20px">No positions</td></tr>';
   }catch(e){console.error(e);}
 }
@@ -1815,7 +1844,7 @@ async function refreshIntelligence(){
 async function forceScan(){
   await fetch('/api/scan/refresh',{method:'POST'});
   const cards=document.getElementById('scan-cards');
-  cards.innerHTML='<div style="font-family:var(--mono);color:var(--accent);padding:20px">⟳ Scan running — AI analyzing 16 symbols... refresh in ~45 seconds</div>';
+  cards.innerHTML='<div style="font-family:var(--mono);color:var(--accent);padding:20px">⟳ Scan running — AI analyzing 14 crypto symbols... refresh in ~45 seconds</div>';
   setTimeout(loadResearch, 45000);
 }
 async function loadResearch(){
