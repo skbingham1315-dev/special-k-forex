@@ -371,12 +371,14 @@ class CryptoEngine:
             log.warning(f"Heavy bearish news ({news['bearish_count']} bearish headlines) — halting entries.")
             return
 
+        # Build crypto key set once — used throughout exit pass and order cleanup
+        _crypto_keys = {s.replace("/", "") for s in CRYPTO_SYMBOLS}
+
         # ── STALE ORDER CLEANUP — cancel unfilled crypto BUY orders > 4 hours old ──
         # GTC orders sit forever if price moves away. Cancel and re-evaluate each run
         # so entries are always based on current market price.
         try:
-            from datetime import timezone as _tz
-            _now = datetime.now(_tz.utc)
+            _now = datetime.now(timezone.utc)
             for _order in broker.get_open_orders():
                 _sym = getattr(_order, "symbol", "")
                 _side = str(getattr(getattr(_order, "side", None), "value", "")).lower()
@@ -407,8 +409,6 @@ class CryptoEngine:
             all_positions = {p.symbol: p for p in broker.get_positions()}
         except Exception:
             all_positions = {}
-
-        _crypto_keys = {s.replace("/", "") for s in CRYPTO_SYMBOLS}
 
         for sym_key, pos in list(all_positions.items()):
             side_val = getattr(pos.side, "value", str(pos.side)).lower()

@@ -202,12 +202,18 @@ def scheduler_loop():
         try:
             if os.environ.get("DISABLE_TRADING", "").strip().lower() != "true":
                 if _time.monotonic() - _last_crypto_run >= 900:  # every 15 min, 24/7
-                    from special_k_forex.crypto_engine import CryptoEngine
-                    from special_k_forex.config import Settings
-                    cfg = Settings()
-                    if TRADE_BUDGET["value"] > 0:
-                        cfg.trade_budget = TRADE_BUDGET["value"]
-                    CryptoEngine(cfg, dry_run=not LIVE_MODE["value"]).run()
+                    if not _ENGINE_LOCK.acquire(blocking=False):
+                        log.info("Scheduler: engine already running — skipping this cycle.")
+                    else:
+                        try:
+                            from special_k_forex.crypto_engine import CryptoEngine
+                            from special_k_forex.config import Settings
+                            cfg = Settings()
+                            if TRADE_BUDGET["value"] > 0:
+                                cfg.trade_budget = TRADE_BUDGET["value"]
+                            CryptoEngine(cfg, dry_run=not LIVE_MODE["value"]).run()
+                        finally:
+                            _ENGINE_LOCK.release()
                     _last_crypto_run = _time.monotonic()
         except Exception as e:
             log.error(f"Scheduler error: {e}")
